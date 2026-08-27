@@ -4450,14 +4450,15 @@ fn op_local_storage_clear(state: &OpState) -> bool {
 
 /// Return the number of entries in localStorage.
 #[op2]
-#[serde]
-fn op_local_storage_length(state: &OpState) -> i32 {
+#[string]
+fn op_local_storage_length(state: &OpState) -> String {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
-    gs.local_storage
+    let len = gs.local_storage
         .as_ref()
         .and_then(|s| s.len().ok())
-        .unwrap_or(0) as i32
+        .unwrap_or(0);
+    len.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -4814,13 +4815,16 @@ pub fn build_extension() -> Extension {
         op_idb_clear(),
         op_idb_count(),
         op_idb_get_all_keys(),
-        // WebSocket ops (servo WebSocket parity)
-        op_websocket_connect(),
-        op_websocket_send(),
-        op_websocket_close(),
         // XPath ops (servo-xpath parity)
         op_xpath_evaluate(),
     ];
+    // Only registered when the websocket feature is compiled in.
+    #[cfg(feature = "websocket")]
+    {
+        ops.push(op_websocket_connect());
+        ops.push(op_websocket_send());
+        ops.push(op_websocket_close());
+    }
     // Only registered when the render feature is compiled in. bootstrap.js
     // probes with typeof before calling, so the op's absence is a clean fallback.
     #[cfg(feature = "render")]
