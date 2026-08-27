@@ -337,7 +337,17 @@ impl ObscuraJsRuntime {
             runtime
                 .execute_script(
                     "<obscura:init>",
-                    "globalThis.__obscura_objects = {}; globalThis.__obscura_oid = 0;".to_string(),
+                    "globalThis.__obscura_objects = {}; globalThis.__obscura_oid = 0;\n\
+                     if (typeof document !== 'undefined' && document !== null) {\n\
+                       try {\n\
+                         Object.defineProperty(document, 'fullscreenElement', { get() { return this._fullscreenElement || null; }, set(v) { this._fullscreenElement = v; } });\n\
+                         Object.defineProperty(document, 'fullscreenEnabled', { get() { return true; } });\n\
+                         document.exitFullscreen = function() { var el = this.fullscreenElement; if (el) this.fullscreenElement = null; this.dispatchEvent(new Event('fullscreenchange')); return Promise.resolve(); };\n\
+                         document.exitPointerLock = function() { var el = this.pointerLockElement; if (el) el._pointerLocked = false; this._pointerLockElement = null; this.dispatchEvent(new Event('pointerlockchange')); };\n\
+                         Object.defineProperty(document, 'pointerLockElement', { get() { return this._pointerLockElement || null; } });\n\
+                         Object.defineProperty(document, 'pointerLockEnabled', { get() { return true; } });\n\
+                       } catch(e) {}\n\
+                     }".to_string(),
                 )
                 .expect("init should not fail");
 

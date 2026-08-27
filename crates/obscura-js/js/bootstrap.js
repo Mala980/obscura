@@ -12462,7 +12462,6 @@ _markNative(globalThis.Selection);
   XMLSerializer, XMLSerializer.prototype.serializeToString,
   Element.prototype.requestFullscreen, Element.prototype.exitFullscreen,
   Element.prototype.requestPointerLock,
-  HTMLDocument.prototype.exitFullscreen, HTMLDocument.prototype.exitPointerLock,
 ].forEach(fn => { if (typeof fn === 'function') _markNative(fn); });
 
 class _IframeDocument {
@@ -13895,48 +13894,55 @@ navigator.keyboard = {
 navigator.gpu = { requestAdapter() { return Promise.resolve(null); } };
 navigator.wakeLock = { request() { return Promise.reject(new DOMException('Not allowed', 'NotAllowedError')); } };
 
-// Fullscreen API
-Element.prototype.requestFullscreen = function() {
-  const doc = globalThis.document;
-  if (doc) doc.fullscreenElement = this;
-  this.dispatchEvent(new Event('fullscreenchange'));
-  return Promise.resolve();
-};
-Element.prototype.exitFullscreen = function() {
-  const doc = globalThis.document;
-  if (doc) doc.fullscreenElement = null;
-  this.dispatchEvent(new Event('fullscreenchange'));
-  return Promise.resolve();
-};
-Object.defineProperty(HTMLDocument.prototype, 'fullscreenElement', {
-  get() { return this._fullscreenElement || null; },
-  set(v) { this._fullscreenElement = v; }
-});
-Object.defineProperty(HTMLDocument.prototype, 'fullscreenEnabled', { get() { return true; } });
-HTMLDocument.prototype.exitFullscreen = function() {
-  const el = this.fullscreenElement;
-  if (el) { this.fullscreenElement = null; }
-  this.dispatchEvent(new Event('fullscreenchange'));
-  return Promise.resolve();
-};
+// Fullscreen API - defined via try/catch to survive V8 snapshot (document is null during snapshot)
+(function() {
+  Element.prototype.requestFullscreen = function() {
+    const doc = globalThis.document;
+    if (doc) doc.fullscreenElement = this;
+    this.dispatchEvent(new Event('fullscreenchange'));
+    return Promise.resolve();
+  };
+  Element.prototype.exitFullscreen = function() {
+    const doc = globalThis.document;
+    if (doc) doc.fullscreenElement = null;
+    this.dispatchEvent(new Event('fullscreenchange'));
+    return Promise.resolve();
+  };
+  try {
+    Object.defineProperty(document, 'fullscreenElement', {
+      get() { return this._fullscreenElement || null; },
+      set(v) { this._fullscreenElement = v; }
+    });
+    Object.defineProperty(document, 'fullscreenEnabled', { get() { return true; } });
+    document.exitFullscreen = function() {
+      const el = this.fullscreenElement;
+      if (el) { this.fullscreenElement = null; }
+      this.dispatchEvent(new Event('fullscreenchange'));
+      return Promise.resolve();
+    };
+  } catch(e) {}
+})();
 
 // Pointer Lock API
-Element.prototype.requestPointerLock = function() {
-  this._pointerLocked = true;
-  const doc = globalThis.document;
-  if (doc) doc.dispatchEvent(new Event('pointerlockchange'));
-  return Promise.resolve();
-};
-HTMLDocument.prototype.exitPointerLock = function() {
-  const el = this.pointerLockElement;
-  if (el) el._pointerLocked = false;
-  this._pointerLockElement = null;
-  this.dispatchEvent(new Event('pointerlockchange'));
-};
-Object.defineProperty(HTMLDocument.prototype, 'pointerLockElement', {
-  get() { return this._pointerLockElement || null; }
-});
-Object.defineProperty(HTMLDocument.prototype, 'pointerLockEnabled', { get() { return true; } });
+(function() {
+  Element.prototype.requestPointerLock = function() {
+    this._pointerLocked = true;
+    try { globalThis.document.dispatchEvent(new Event('pointerlockchange')); } catch(e) {}
+    return Promise.resolve();
+  };
+  try {
+    document.exitPointerLock = function() {
+      const el = this.pointerLockElement;
+      if (el) el._pointerLocked = false;
+      this._pointerLockElement = null;
+      this.dispatchEvent(new Event('pointerlockchange'));
+    };
+    Object.defineProperty(document, 'pointerLockElement', {
+      get() { return this._pointerLockElement || null; }
+    });
+    Object.defineProperty(document, 'pointerLockEnabled', { get() { return true; } });
+  } catch(e) {}
+})();
 
 // Gamepad API
 navigator.getGamepads = function() {
