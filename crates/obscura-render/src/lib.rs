@@ -1009,6 +1009,17 @@ pub struct LayoutStyle {
     /// `<td>`/`<th>` elements even though Taffy represents their cell-content
     /// wrapper as an internal column flexbox.
     pub(crate) is_table_cell_box: bool,
+    /// The computed display is `table-row`.
+    ///
+    /// CSS-authored table rows must be recognized by the table grid builder
+    /// even when the element is not a native `<tr>`. The row establishes an
+    /// internal flex container whose children are table cells.
+    pub(crate) is_table_row_box: bool,
+    /// The computed display is `table-header-group` or `table-footer-group`.
+    ///
+    /// Row groups collect rows and participate in table section ordering.
+    /// Author-CSS row groups behave like `<thead>`/`<tfoot>` for layout.
+    pub(crate) is_table_row_group_box: bool,
     /// The HTML UA sheet's vendor `text-align` behavior for `<center>`.
     /// Unlike ordinary `text-align:center`, it also centers fixed-width block
     /// descendants while leaving auto-width blocks fill-available.

@@ -765,6 +765,12 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
                     | "table"
                     | "inline-table"
                     | "table-cell"
+                    | "table-row"
+                    | "table-header-group"
+                    | "table-footer-group"
+                    | "table-column-group"
+                    | "table-caption"
+                    | "table-column"
                     | "-webkit-box"
                     | "-webkit-inline-box"
                     | "contents"
@@ -779,6 +785,8 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
                 style.internal_flex_container = false;
                 style.is_table_box = false;
                 style.is_table_cell_box = false;
+                style.is_table_row_box = false;
+                style.is_table_row_group_box = false;
                 style.is_inline_block = false;
                 style.flow_root = false;
                 style.display_contents = false;
@@ -832,6 +840,36 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
                     style.flex_direction = Some(taffy::FlexDirection::Column);
                     style.align_items = Some(taffy::AlignItems::FLEX_START);
                     style.is_table_cell_box = true;
+                }
+                // Internal table display types. These only apply when the
+                // element's parent establishes a table formatting context;
+                // otherwise they compute to `none`. The internal flex
+                // stand-in keeps descendants out of the CSS flex item model
+                // while the table grid builder owns the actual sizing.
+                "table-row" => {
+                    style.display = crate::Display::Flex;
+                    style.internal_flex_container = true;
+                    style.is_table_row_box = true;
+                    style.min_width = crate::Dimension::Px(0.0);
+                    style.width = crate::Dimension::Percent(1.0);
+                }
+                "table-header-group" | "table-footer-group" => {
+                    style.display = crate::Display::Block;
+                    style.is_table_row_group_box = true;
+                    style.width = crate::Dimension::Percent(1.0);
+                    style.vertical_align = Some(crate::VerticalAlign::Middle);
+                }
+                "table-column-group" => {
+                    style.display = crate::Display::Block;
+                    style.width = crate::Dimension::Percent(1.0);
+                }
+                "table-caption" => {
+                    style.display = crate::Display::Block;
+                }
+                "table-column" => {
+                    // A table-column is a non-rendered box that only
+                    // participates in column sizing via the <col> element.
+                    style.display = crate::Display::None;
                 }
                 "-webkit-box" => {
                     // The unclamped legacy display is an old flexbox. When it
@@ -2220,6 +2258,13 @@ pub fn supports_declaration(name: &str, value: &str) -> bool {
                 | "flow-root"
                 | "table"
                 | "inline-table"
+                | "table-cell"
+                | "table-row"
+                | "table-header-group"
+                | "table-footer-group"
+                | "table-column-group"
+                | "table-caption"
+                | "table-column"
                 | "-webkit-box"
                 | "-webkit-inline-box"
                 | "contents"

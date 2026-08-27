@@ -56,6 +56,9 @@ pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 hkdf = "0.12"
 # CSPRNG for getRandomValues / randomUUID (replaces Math.random).
 getrandom = "0.2"
+# Elliptic curve cryptography for WebCrypto RSA/EC.
+num-bigint = { version = "0.4", default-features = false, features = ["std"] }
+num-traits = "0.2"
 obscura-render = { workspace = true, optional = true }
 # WebSocket client for page-level WebSocket API (servo parity).
 tungstenite = { workspace = true, optional = true }

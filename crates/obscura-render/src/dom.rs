@@ -4684,6 +4684,8 @@ fn layout_dom_once(
             flow_root: bool,
             is_table_box: bool,
             is_table_cell_box: bool,
+            is_table_row_box: bool,
+            is_table_row_group_box: bool,
             color: Option<[u8; 4]>,
             font_size: Option<f32>,
             font_weight: u16,
@@ -4736,6 +4738,8 @@ fn layout_dom_once(
                     flow_root: false,
                     is_table_box: false,
                     is_table_cell_box: false,
+                    is_table_row_box: false,
+                    is_table_row_group_box: false,
                     color: None,
                     font_size: None,
                     font_weight: 400,
@@ -4837,6 +4841,8 @@ fn layout_dom_once(
                     inh.flow_root = style.flow_root;
                     inh.is_table_box = style.is_table_box;
                     inh.is_table_cell_box = style.is_table_cell_box;
+                    inh.is_table_row_box = style.is_table_row_box;
+                    inh.is_table_row_group_box = style.is_table_row_group_box;
                     inh.color = style.color.or(inh.color);
                     inh.font_size = style.font_size.or(inh.font_size);
                     inh.font_weight = crate::style::used_font_weight(style);
@@ -5003,12 +5009,20 @@ fn layout_dom_once(
                     style.flow_root = inh.flow_root;
                     style.is_table_box = inh.is_table_box;
                     style.is_table_cell_box = inh.is_table_cell_box;
+                    style.is_table_row_box = inh.is_table_row_box;
+                    style.is_table_row_group_box = inh.is_table_row_group_box;
                     // Reconstruct the internal cell-content wrapper only when
                     // the inherited computed display is table-cell.
                     style.internal_flex_container = style.is_table_cell_box;
                     if style.is_table_cell_box {
                         style.flex_direction = Some(taffy::FlexDirection::Column);
                         style.align_items = Some(taffy::AlignItems::FLEX_START);
+                    }
+                    // Reconstruct the internal flex stand-in for table rows.
+                    if style.is_table_row_box {
+                        style.internal_flex_container = true;
+                        style.min_width = crate::Dimension::Px(0.0);
+                        style.width = crate::Dimension::Percent(1.0);
                     }
                     style.display_inherit = false;
                 }
@@ -5023,6 +5037,8 @@ fn layout_dom_once(
                 inh.flow_root = style.flow_root;
                 inh.is_table_box = style.is_table_box;
                 inh.is_table_cell_box = style.is_table_cell_box;
+                inh.is_table_row_box = style.is_table_row_box;
+                inh.is_table_row_group_box = style.is_table_row_group_box;
                 match style.color {
                     Some(c) => inh.color = Some(c),
                     None => style.color = inh.color,
@@ -5470,6 +5486,8 @@ fn layout_dom_once(
                 let host_flow_root = style.flow_root;
                 let host_is_table_box = style.is_table_box;
                 let host_is_table_cell_box = style.is_table_cell_box;
+                let host_is_table_row_box = style.is_table_row_box;
+                let host_is_table_row_group_box = style.is_table_row_group_box;
                 let host_grid_auto_columns = style.grid_auto_columns.clone();
                 let host_grid_auto_rows = style.grid_auto_rows.clone();
                 let host_grid_auto_column_calcs = style.grid_calc_expressions[2].clone();
@@ -5510,6 +5528,8 @@ fn layout_dom_once(
                         pseudo.flow_root = host_flow_root;
                         pseudo.is_table_box = host_is_table_box;
                         pseudo.is_table_cell_box = host_is_table_cell_box;
+                        pseudo.is_table_row_box = host_is_table_row_box;
+                        pseudo.is_table_row_group_box = host_is_table_row_group_box;
                         pseudo.internal_flex_container = pseudo.is_table_cell_box;
                         if pseudo.is_table_cell_box {
                             pseudo.flex_direction = Some(taffy::FlexDirection::Column);
@@ -10927,11 +10947,64 @@ fn build_table(
             return None;
         }
     } else {
-        // CSS table fixup inserts an anonymous row around table-cell children
-        // that are direct children of a table. The grid representation does
-        // not need a material row node, but retaining one logical row gives
-        // those cells the same shared-track negotiation as native cells.
-        rows.push((id, 1));
+        // Check if any children have CSS `display: table-row`. If so, treat
+        // them as rows (similar to native <tr> elements). Otherwise fall back
+        // to the anonymous-row fixup for direct table-cell children.
+        let children = rendered_children(tree, id);
+        let has_css_table_rows = children.iter().any(|child| {
+            styles
+                .get(child)
+                .is_some_and(|s| s.is_table_row_box)
+        });
+        if has_css_table_rows {
+            // Collect CSS table rows, grouping by row-group containers.
+            let mut direct_start: Option<usize> = None;
+            for cid in &children {
+                let child_style = styles.get(cid);
+                if child_style.map_or(false, |s| s.display == crate::Display::None) {
+                    continue;
+                }
+                if child_style.map_or(false, |s| s.is_table_row_box) {
+                    direct_start.get_or_insert(rows.len());
+                    rows.push((*cid, 0));
+                } else if child_style.map_or(false, |s| s.is_table_row_group_box) {
+                    if let Some(start) = direct_start.take() {
+                        let end = rows.len();
+                        for entry in &mut rows[start..end] {
+                            entry.1 = end;
+                        }
+                    }
+                    let start = rows.len();
+                    for row_child in rendered_children(tree, *cid) {
+                        if styles
+                            .get(row_child)
+                            .is_some_and(|s| s.is_table_row_box)
+                        {
+                            rows.push((row_child, 0));
+                        }
+                    }
+                    let end = rows.len();
+                    for entry in &mut rows[start..end] {
+                        entry.1 = end;
+                    }
+                }
+            }
+            if let Some(start) = direct_start {
+                let end = rows.len();
+                for entry in &mut rows[start..end] {
+                    entry.1 = end;
+                }
+            }
+        } else {
+            // CSS table fixup inserts an anonymous row around table-cell children
+            // that are direct children of a table. The grid representation does
+            // not need a material row node, but retaining one logical row gives
+            // those cells the same shared-track negotiation as native cells.
+            rows.push((id, 1));
+        }
+        if rows.is_empty() {
+            return None;
+        }
     }
     // Bounds so a crafted table cannot exhaust memory or time: `colspan`/
     // `rowspan` and the column count are page-controlled, and the occupancy
@@ -10962,8 +11035,15 @@ fn build_table(
     let mut ncols = 0usize;
     for (r, &(tr, group_end)) in rows.iter().enumerate() {
         let mut c = 0usize;
-        let row_children = if native_html_table {
-            tree.children(tr)
+        let row_children: Vec<NodeId> = if native_html_table {
+            tree.children(tr).collect()
+        } else if !native_html_table
+            && styles
+                .get(&tr)
+                .is_some_and(|s| s.is_table_row_box)
+        {
+            // CSS table row: collect cells from the row element's children
+            rendered_children(tree, tr)
         } else {
             authored_row_children.clone().unwrap_or_default()
         };
