@@ -12462,7 +12462,8 @@ _markNative(globalThis.Selection);
   XMLSerializer, XMLSerializer.prototype.serializeToString,
   Element.prototype.requestFullscreen, Element.prototype.exitFullscreen,
   Element.prototype.requestPointerLock,
-  document.exitFullscreen, document.exitPointerLock,
+  typeof document !== 'undefined' && document !== null && document.exitFullscreen || null,
+  typeof document !== 'undefined' && document !== null && document.exitPointerLock || null,
 ].forEach(fn => { if (typeof fn === 'function') _markNative(fn); });
 
 class _IframeDocument {
@@ -13897,16 +13898,16 @@ navigator.wakeLock = { request() { return Promise.reject(new DOMException('Not a
 
 // Fullscreen API
 Element.prototype.requestFullscreen = function() {
-  if (typeof document !== 'undefined' && document) document.fullscreenElement = this;
+  if (typeof document !== 'undefined' && document !== null) document.fullscreenElement = this;
   this.dispatchEvent(new Event('fullscreenchange'));
   return Promise.resolve();
 };
 Element.prototype.exitFullscreen = function() {
-  if (typeof document !== 'undefined' && document) document.fullscreenElement = null;
+  if (typeof document !== 'undefined' && document !== null) document.fullscreenElement = null;
   this.dispatchEvent(new Event('fullscreenchange'));
   return Promise.resolve();
 };
-if (typeof document !== 'undefined' && document) {
+if (typeof document !== 'undefined' && document !== null) {
   Object.defineProperty(document, 'fullscreenElement', {
     get() { return this._fullscreenElement || null; },
     set(v) { this._fullscreenElement = v; }
@@ -13923,10 +13924,10 @@ if (typeof document !== 'undefined' && document) {
 // Pointer Lock API
 Element.prototype.requestPointerLock = function() {
   this._pointerLocked = true;
-  if (typeof document !== 'undefined' && document) document.dispatchEvent(new Event('pointerlockchange'));
+  if (typeof document !== 'undefined' && document !== null) document.dispatchEvent(new Event('pointerlockchange'));
   return Promise.resolve();
 };
-if (typeof document !== 'undefined' && document) {
+if (typeof document !== 'undefined' && document !== null) {
   document.exitPointerLock = function() {
     const el = this.pointerLockElement;
     if (el) el._pointerLocked = false;
