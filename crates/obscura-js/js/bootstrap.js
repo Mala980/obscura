@@ -13897,43 +13897,47 @@ navigator.wakeLock = { request() { return Promise.reject(new DOMException('Not a
 
 // Fullscreen API
 Element.prototype.requestFullscreen = function() {
-  document.fullscreenElement = this;
+  if (typeof document !== 'undefined' && document) document.fullscreenElement = this;
   this.dispatchEvent(new Event('fullscreenchange'));
   return Promise.resolve();
 };
 Element.prototype.exitFullscreen = function() {
-  document.fullscreenElement = null;
+  if (typeof document !== 'undefined' && document) document.fullscreenElement = null;
   this.dispatchEvent(new Event('fullscreenchange'));
   return Promise.resolve();
 };
-Object.defineProperty(document, 'fullscreenElement', {
-  get() { return this._fullscreenElement || null; },
-  set(v) { this._fullscreenElement = v; }
-});
-Object.defineProperty(document, 'fullscreenEnabled', { get() { return true; } });
-document.exitFullscreen = function() {
-  const el = this.fullscreenElement;
-  if (el) { this.fullscreenElement = null; }
-  this.dispatchEvent(new Event('fullscreenchange'));
-  return Promise.resolve();
-};
+if (typeof document !== 'undefined' && document) {
+  Object.defineProperty(document, 'fullscreenElement', {
+    get() { return this._fullscreenElement || null; },
+    set(v) { this._fullscreenElement = v; }
+  });
+  Object.defineProperty(document, 'fullscreenEnabled', { get() { return true; } });
+  document.exitFullscreen = function() {
+    const el = this.fullscreenElement;
+    if (el) { this.fullscreenElement = null; }
+    this.dispatchEvent(new Event('fullscreenchange'));
+    return Promise.resolve();
+  };
+}
 
 // Pointer Lock API
 Element.prototype.requestPointerLock = function() {
   this._pointerLocked = true;
-  document.dispatchEvent(new Event('pointerlockchange'));
+  if (typeof document !== 'undefined' && document) document.dispatchEvent(new Event('pointerlockchange'));
   return Promise.resolve();
 };
-document.exitPointerLock = function() {
-  const el = this.pointerLockElement;
-  if (el) el._pointerLocked = false;
-  this._pointerLockElement = null;
-  this.dispatchEvent(new Event('pointerlockchange'));
-};
-Object.defineProperty(document, 'pointerLockElement', {
-  get() { return this._pointerLockElement || null; }
-});
-Object.defineProperty(document, 'pointerLockEnabled', { get() { return true; } });
+if (typeof document !== 'undefined' && document) {
+  document.exitPointerLock = function() {
+    const el = this.pointerLockElement;
+    if (el) el._pointerLocked = false;
+    this._pointerLockElement = null;
+    this.dispatchEvent(new Event('pointerlockchange'));
+  };
+  Object.defineProperty(document, 'pointerLockElement', {
+    get() { return this._pointerLockElement || null; }
+  });
+  Object.defineProperty(document, 'pointerLockEnabled', { get() { return true; } });
+}
 
 // Gamepad API
 navigator.getGamepads = function() {
