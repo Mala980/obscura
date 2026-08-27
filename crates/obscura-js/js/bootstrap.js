@@ -12462,8 +12462,7 @@ _markNative(globalThis.Selection);
   XMLSerializer, XMLSerializer.prototype.serializeToString,
   Element.prototype.requestFullscreen, Element.prototype.exitFullscreen,
   Element.prototype.requestPointerLock,
-  typeof document !== 'undefined' && document !== null && document.exitFullscreen || null,
-  typeof document !== 'undefined' && document !== null && document.exitPointerLock || null,
+  HTMLDocument.prototype.exitFullscreen, HTMLDocument.prototype.exitPointerLock,
 ].forEach(fn => { if (typeof fn === 'function') _markNative(fn); });
 
 class _IframeDocument {
@@ -13898,47 +13897,46 @@ navigator.wakeLock = { request() { return Promise.reject(new DOMException('Not a
 
 // Fullscreen API
 Element.prototype.requestFullscreen = function() {
-  if (typeof document !== 'undefined' && document !== null) document.fullscreenElement = this;
+  const doc = globalThis.document;
+  if (doc) doc.fullscreenElement = this;
   this.dispatchEvent(new Event('fullscreenchange'));
   return Promise.resolve();
 };
 Element.prototype.exitFullscreen = function() {
-  if (typeof document !== 'undefined' && document !== null) document.fullscreenElement = null;
+  const doc = globalThis.document;
+  if (doc) doc.fullscreenElement = null;
   this.dispatchEvent(new Event('fullscreenchange'));
   return Promise.resolve();
 };
-if (typeof document !== 'undefined' && document !== null) {
-  Object.defineProperty(document, 'fullscreenElement', {
-    get() { return this._fullscreenElement || null; },
-    set(v) { this._fullscreenElement = v; }
-  });
-  Object.defineProperty(document, 'fullscreenEnabled', { get() { return true; } });
-  document.exitFullscreen = function() {
-    const el = this.fullscreenElement;
-    if (el) { this.fullscreenElement = null; }
-    this.dispatchEvent(new Event('fullscreenchange'));
-    return Promise.resolve();
-  };
-}
+Object.defineProperty(HTMLDocument.prototype, 'fullscreenElement', {
+  get() { return this._fullscreenElement || null; },
+  set(v) { this._fullscreenElement = v; }
+});
+Object.defineProperty(HTMLDocument.prototype, 'fullscreenEnabled', { get() { return true; } });
+HTMLDocument.prototype.exitFullscreen = function() {
+  const el = this.fullscreenElement;
+  if (el) { this.fullscreenElement = null; }
+  this.dispatchEvent(new Event('fullscreenchange'));
+  return Promise.resolve();
+};
 
 // Pointer Lock API
 Element.prototype.requestPointerLock = function() {
   this._pointerLocked = true;
-  if (typeof document !== 'undefined' && document !== null) document.dispatchEvent(new Event('pointerlockchange'));
+  const doc = globalThis.document;
+  if (doc) doc.dispatchEvent(new Event('pointerlockchange'));
   return Promise.resolve();
 };
-if (typeof document !== 'undefined' && document !== null) {
-  document.exitPointerLock = function() {
-    const el = this.pointerLockElement;
-    if (el) el._pointerLocked = false;
-    this._pointerLockElement = null;
-    this.dispatchEvent(new Event('pointerlockchange'));
-  };
-  Object.defineProperty(document, 'pointerLockElement', {
-    get() { return this._pointerLockElement || null; }
-  });
-  Object.defineProperty(document, 'pointerLockEnabled', { get() { return true; } });
-}
+HTMLDocument.prototype.exitPointerLock = function() {
+  const el = this.pointerLockElement;
+  if (el) el._pointerLocked = false;
+  this._pointerLockElement = null;
+  this.dispatchEvent(new Event('pointerlockchange'));
+};
+Object.defineProperty(HTMLDocument.prototype, 'pointerLockElement', {
+  get() { return this._pointerLockElement || null; }
+});
+Object.defineProperty(HTMLDocument.prototype, 'pointerLockEnabled', { get() { return true; } });
 
 // Gamepad API
 navigator.getGamepads = function() {
