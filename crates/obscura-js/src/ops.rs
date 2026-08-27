@@ -4600,7 +4600,7 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
     {
         use tungstenite::connect;
         match connect(&url) {
-            Ok((response, _)) => {
+            Ok((_response, _socket)) => {
                 let handle = {
                     let shared = state.borrow::<SharedState>().clone();
                     let mut gs = shared.borrow_mut();
@@ -4608,7 +4608,7 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                     gs.ws_next_handle += 1;
                     h
                 };
-                serde_json::json!({ "handle": handle, "protocol": response.headers().get("Sec-WebSocket-Protocol").and_then(|v| v.to_str().ok()).unwrap_or("") })
+                serde_json::json!({ "handle": handle, "protocol": "" })
             }
             Err(e) => serde_json::json!({ "error": e.to_string() }),
         }
