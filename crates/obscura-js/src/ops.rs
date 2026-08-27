@@ -4489,7 +4489,7 @@ fn is_probable_prime(n: &num_bigint::BigUint, rounds: u32) -> bool {
     // Write n-1 as 2^r * d
     let mut d = n - 1u32;
     let mut r = 0u32;
-    while d.is_even() {
+    while d.clone() % 2u32 == BigUint::ZERO {
         d /= 2u32;
         r += 1;
     }
