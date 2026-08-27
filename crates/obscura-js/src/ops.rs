@@ -4451,13 +4451,13 @@ fn op_local_storage_clear(state: &OpState) -> bool {
 /// Return the number of entries in localStorage.
 #[op2]
 #[serde]
-fn op_local_storage_length(state: &OpState) -> u32 {
+fn op_local_storage_length(state: &OpState) -> i32 {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
     gs.local_storage
         .as_ref()
         .and_then(|s| s.len().ok())
-        .unwrap_or(0) as u32
+        .unwrap_or(0) as i32
 }
 
 // ---------------------------------------------------------------------------
@@ -4510,7 +4510,7 @@ fn op_idb_create_store(
 fn op_idb_put(
     state: &OpState,
     db_handle: u32,
-    store_id: i64,
+    #[bigint] store_id: i64,
     #[string] key: String,
     #[string] value: String,
 ) -> bool {
@@ -4526,7 +4526,7 @@ fn op_idb_put(
 /// Get a value from an IndexedDB object store by key.
 #[op2]
 #[string]
-fn op_idb_get(state: &OpState, db_handle: u32, store_id: i64, #[string] key: String) -> String {
+fn op_idb_get(state: &OpState, db_handle: u32, #[bigint] store_id: i64, #[string] key: String) -> String {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
     let Some(db) = gs.idb_databases.get(&db_handle) else {
@@ -4540,7 +4540,7 @@ fn op_idb_get(state: &OpState, db_handle: u32, store_id: i64, #[string] key: Str
 
 /// Delete a value from an IndexedDB object store by key.
 #[op2(fast)]
-fn op_idb_delete(state: &OpState, db_handle: u32, store_id: i64, #[string] key: String) -> bool {
+fn op_idb_delete(state: &OpState, db_handle: u32, #[bigint] store_id: i64, #[string] key: String) -> bool {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
     let Some(db) = gs.idb_databases.get(&db_handle) else {
@@ -4551,7 +4551,7 @@ fn op_idb_delete(state: &OpState, db_handle: u32, store_id: i64, #[string] key: 
 
 /// Clear all data in an IndexedDB object store.
 #[op2(fast)]
-fn op_idb_clear(state: &OpState, db_handle: u32, store_id: i64) -> bool {
+fn op_idb_clear(state: &OpState, db_handle: u32, #[bigint] store_id: i64) -> bool {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
     let Some(db) = gs.idb_databases.get(&db_handle) else {
@@ -4563,7 +4563,7 @@ fn op_idb_clear(state: &OpState, db_handle: u32, store_id: i64) -> bool {
 /// Count entries in an IndexedDB object store.
 #[op2]
 #[serde]
-fn op_idb_count(state: &OpState, db_handle: u32, store_id: i64) -> serde_json::Value {
+fn op_idb_count(state: &OpState, db_handle: u32, #[bigint] store_id: i64) -> serde_json::Value {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
     let Some(db) = gs.idb_databases.get(&db_handle) else {
@@ -4576,7 +4576,7 @@ fn op_idb_count(state: &OpState, db_handle: u32, store_id: i64) -> serde_json::V
 /// Get all keys in an IndexedDB object store.
 #[op2]
 #[string]
-fn op_idb_get_all_keys(state: &OpState, db_handle: u32, store_id: i64) -> String {
+fn op_idb_get_all_keys(state: &OpState, db_handle: u32, #[bigint] store_id: i64) -> String {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
     let Some(db) = gs.idb_databases.get(&db_handle) else {
@@ -4591,33 +4591,41 @@ fn op_idb_get_all_keys(state: &OpState, db_handle: u32, store_id: i64) -> String
 // ---------------------------------------------------------------------------
 
 /// Connect to a WebSocket URL. Returns a connection handle.
+#[cfg(feature = "websocket")]
 #[op2]
 #[serde]
 fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::Value {
-    use tungstenite::connect;
-    match connect(&url) {
-        Ok((response, _)) => {
-            let handle = {
-                let shared = state.borrow::<SharedState>().clone();
-                let mut gs = shared.borrow_mut();
-                let h = gs.ws_next_handle;
-                gs.ws_next_handle += 1;
-                h
-            };
-            serde_json::json!({ "handle": handle, "protocol": response.headers().get("Sec-WebSocket-Protocol").and_then(|v| v.to_str().ok()).unwrap_or("") })
+    #[cfg(feature = "websocket")]
+    {
+        use tungstenite::connect;
+        match connect(&url) {
+            Ok((response, _)) => {
+                let handle = {
+                    let shared = state.borrow::<SharedState>().clone();
+                    let mut gs = shared.borrow_mut();
+                    let h = gs.ws_next_handle;
+                    gs.ws_next_handle += 1;
+                    h
+                };
+                serde_json::json!({ "handle": handle, "protocol": response.headers().get("Sec-WebSocket-Protocol").and_then(|v| v.to_str().ok()).unwrap_or("") })
+            }
+            Err(e) => serde_json::json!({ "error": e.to_string() }),
         }
-        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    }
+    #[cfg(not(feature = "websocket"))]
+    {
+        let _ = state;
+        let _ = url;
+        serde_json::json!({ "error": "websocket feature not enabled" })
     }
 }
 
 /// Send a text message over a WebSocket connection.
+#[cfg(feature = "websocket")]
 #[op2(fast)]
 fn op_websocket_send(state: &OpState, handle: u32, #[string] message: String) -> bool {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
-    // WebSocket connections are stored in the page-level connection pool.
-    // This op queues the message for async send; actual I/O happens on the
-    // tokio runtime.
     if let Some(ref tx) = gs.ws_send_tx {
         tx.send((handle, message)).is_ok()
     } else {
@@ -4625,13 +4633,26 @@ fn op_websocket_send(state: &OpState, handle: u32, #[string] message: String) ->
     }
 }
 
+#[cfg(not(feature = "websocket"))]
+#[op2(fast)]
+fn op_websocket_send(_state: &OpState, _handle: u32, #[string] _message: String) -> bool {
+    false
+}
+
 /// Close a WebSocket connection.
+#[cfg(feature = "websocket")]
 #[op2(fast)]
 fn op_websocket_close(state: &OpState, handle: u32) -> bool {
     let shared = state.borrow::<SharedState>().clone();
     let mut gs = shared.borrow_mut();
     gs.ws_connections.remove(&handle);
     true
+}
+
+#[cfg(not(feature = "websocket"))]
+#[op2(fast)]
+fn op_websocket_close(_state: &OpState, _handle: u32) -> bool {
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -4667,7 +4688,7 @@ fn evaluate_simple_xpath(dom: &DomTree, expression: &str) -> Vec<String> {
         for nid in dom.descendants(root) {
             if let Some(node) = dom.get_node(nid) {
                 if let Some(attrs) = node.attrs() {
-                    if attrs.iter().any(|a| a.name.local.as_ref() == "id" && a.value.as_ref() == id_val) {
+                    if attrs.iter().any(|a| a.name.local.as_ref() == "id" && a.value.as_str() == id_val) {
                         results.push(nid.to_string());
                     }
                 }
@@ -4682,7 +4703,7 @@ fn evaluate_simple_xpath(dom: &DomTree, expression: &str) -> Vec<String> {
             if let Some(node) = dom.get_node(nid) {
                 if let Some(attrs) = node.attrs() {
                     if let Some(class_attr) = attrs.iter().find(|a| a.name.local.as_ref() == "class") {
-                        if class_attr.value.as_ref().split_whitespace().any(|c| c == class_val) {
+                        if class_attr.value.split_whitespace().any(|c| c == class_val) {
                             results.push(nid.to_string());
                         }
                     }
