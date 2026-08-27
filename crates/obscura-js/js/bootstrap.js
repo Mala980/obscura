@@ -761,10 +761,25 @@ const _consoleFn = (level, args) => {
 globalThis.console = {
   log: (...a) => _consoleFn("log", a), warn: (...a) => _consoleFn("warn", a),
   error: (...a) => _consoleFn("error", a), info: (...a) => _consoleFn("log", a),
-  debug: () => {}, dir: () => {}, trace: () => {}, table: () => {}, group: () => {},
+  debug: () => {}, dir: () => {}, trace: () => {}, group: () => {},
   groupEnd: () => {}, groupCollapsed: () => {}, time: () => {}, timeEnd: () => {},
   timeLog: () => {}, count: () => {}, countReset: () => {}, clear: () => {},
   assert: (c, ...a) => { if (!c) _consoleFn("error", ["Assertion failed:", ...a]); },
+  table: function(data, columns) {
+    if (data == null) { _consoleFn("log", [String(data)]); return; }
+    if (Array.isArray(data)) {
+      _consoleFn("log", [JSON.stringify(data, null, 2)]);
+      return;
+    }
+    if (typeof data === 'object') {
+      const cols = columns || Object.keys(data);
+      const rows = Array.isArray(cols) ? cols : [cols];
+      const out = rows.map(function(k) { return { key: String(k), value: data[k] }; });
+      _consoleFn("log", [JSON.stringify(out, null, 2)]);
+      return;
+    }
+    _consoleFn("log", [String(data)]);
+  },
 };
 
 let _tid = 0;
@@ -6398,15 +6413,10 @@ globalThis.navigator = {
   serviceWorker: { ready: Promise.resolve(), register(){return Promise.resolve();}, getRegistrations(){return Promise.resolve([]);}, controller: null, oncontrollerchange: null, onmessage: null, addEventListener(){}, removeEventListener(){}, dispatchEvent(){return true;} },
   mediaDevices: {
     enumerateDevices() {
-      return Promise.resolve([
-        {deviceId:"default",kind:"audioinput",label:"",groupId:"default"},
-        {deviceId:"comms",kind:"audioinput",label:"",groupId:"comms"},
-        {deviceId:"default",kind:"audiooutput",label:"",groupId:"default"},
-        {deviceId:"",kind:"videoinput",label:"",groupId:""},
-      ]);
+      return Promise.resolve([]);
     },
-    getUserMedia() { return Promise.reject(new DOMException("NotAllowedError")); },
-    getDisplayMedia() { return Promise.reject(new DOMException("NotAllowedError")); },
+    getUserMedia() { return Promise.reject(new DOMException('No media devices', 'NotFoundError')); },
+    getDisplayMedia() { return Promise.reject(new DOMException('No display', 'NotAllowedError')); },
     addEventListener(){}, removeEventListener(){},
   },
   clipboard: { writeText(){return Promise.resolve();}, readText(){return Promise.resolve("");} },
@@ -13853,6 +13863,10 @@ if (typeof PointerEvent === 'undefined') {
   };
 }
 
+if (!Array.of) {
+  Array.of = function() { return Array.from(arguments); };
+}
+
 if (typeof navigator.credentials === 'undefined') {
   navigator.credentials = { get(){return Promise.resolve(null);}, create(){return Promise.resolve(null);}, store(){return Promise.resolve();}, preventSilentAccess(){return Promise.resolve();} };
 }
@@ -13955,6 +13969,99 @@ if (typeof Notification !== 'undefined') {
 // Wake Lock API
 if (navigator.wakeLock) {
   navigator.wakeLock.request = function() {
+    return Promise.reject(new DOMException('Not supported', 'NotAllowedError'));
+  };
+}
+
+// Web Bluetooth API
+if (!navigator.bluetooth) {
+  navigator.bluetooth = {
+    requestDevice() { return Promise.reject(new DOMException('Not supported', 'NotAllowedError')); },
+    getDevices() { return Promise.resolve([]); },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+}
+
+// Web USB API
+if (!navigator.usb) {
+  navigator.usb = {
+    requestDevice() { return Promise.reject(new DOMException('Not supported', 'NotAllowedError')); },
+    getDevices() { return Promise.resolve([]); },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+}
+
+// Web Serial API
+if (!navigator.serial) {
+  navigator.serial = {
+    requestPort() { return Promise.reject(new DOMException('Not supported', 'NotAllowedError')); },
+    getPorts() { return Promise.resolve([]); },
+  };
+}
+
+// Web HID API
+if (!navigator.hid) {
+  navigator.hid = {
+    requestDevice() { return Promise.reject(new DOMException('Not supported', 'NotAllowedError')); },
+    getDevices() { return Promise.resolve([]); },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+}
+
+// Web NFC API
+if (!('NDEFReader' in window)) {
+  globalThis.NDEFReader = class NDEFReader {
+    constructor() {}
+    scan() { return Promise.reject(new DOMException('Not supported', 'NotAllowedError')); }
+    addEventListener() {}
+    removeEventListener() {}
+  };
+}
+
+// File System Access API
+if (!('showOpenFilePicker' in window)) {
+  globalThis.showOpenFilePicker = function() {
+    return Promise.reject(new DOMException('Not supported', 'NotAllowedError'));
+  };
+  globalThis.showSaveFilePicker = function() {
+    return Promise.reject(new DOMException('Not supported', 'NotAllowedError'));
+  };
+  globalThis.showDirectoryPicker = function() {
+    return Promise.reject(new DOMException('Not supported', 'NotAllowedError'));
+  };
+}
+
+// Barcode Detection API
+if (!('BarcodeDetector' in window)) {
+  globalThis.BarcodeDetector = class BarcodeDetector {
+    constructor() {}
+    detect() { return Promise.resolve([]); }
+    getSupportedFormats() { return Promise.resolve([]); }
+  };
+}
+
+// EyeDropper API
+if (!('EyeDropper' in window)) {
+  globalThis.EyeDropper = class EyeDropper {
+    constructor() {}
+    open() { return Promise.reject(new DOMException('Not supported', 'NotAllowedError')); }
+  };
+}
+
+// Text Detection API
+if (!('TextDetector' in window)) {
+  globalThis.TextDetector = class TextDetector {
+    constructor() {}
+    detect() { return Promise.resolve([]); }
+  };
+}
+
+// Web MIDI API
+if (!navigator.requestMIDIAccess) {
+  navigator.requestMIDIAccess = function() {
     return Promise.reject(new DOMException('Not supported', 'NotAllowedError'));
   };
 }
