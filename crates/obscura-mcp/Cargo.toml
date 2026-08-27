@@ -14,6 +14,7 @@ render = ["obscura-browser/render", "dep:base64"]
 obscura-browser = { workspace = true }
 obscura-dom = { workspace = true }
 obscura-net = { workspace = true }
+obscura-storage = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
 serde = { workspace = true }

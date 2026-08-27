@@ -15,6 +15,7 @@ render = ["obscura-browser/render", "dep:image", "dep:png"]
 obscura-dom = { workspace = true }
 obscura-browser = { workspace = true }
 obscura-js = { workspace = true }
+obscura-storage = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 serde = { workspace = true }

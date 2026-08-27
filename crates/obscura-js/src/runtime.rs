@@ -284,7 +284,12 @@ impl ObscuraJsRuntime {
     /// through `proxy_url` (#139). `None` is equivalent to `with_base_url`
     /// (direct connection).
     pub fn with_base_url_and_proxy(base_url: &str, proxy_url: Option<String>) -> Self {
-        let state = Rc::new(RefCell::new(ObscuraState::new()));
+        let mut obscura_state = ObscuraState::new();
+        // Initialize localStorage for this page's origin (servo-storage parity).
+        if let Ok(storage) = obscura_storage::LocalStorage::open_memory() {
+            obscura_state.local_storage = Some(storage);
+        }
+        let state = Rc::new(RefCell::new(obscura_state));
         let state_clone = state.clone();
         let import_map = state.borrow().import_map.clone();
 

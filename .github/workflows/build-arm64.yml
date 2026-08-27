@@ -1,0 +1,159 @@
+name: Build Linux ARM64
+
+on:
+  push:
+    branches: [engine]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-arm64:
+    name: Build / Linux ARM64
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake libclang-dev libssl-dev llvm-dev pkg-config \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+          fallback: none
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: arm64-linux
+
+      # Build 1: No rendering, no stealth (smallest binary)
+      - name: Build no-render release (ARM64)
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --no-default-features
+
+      # Build 2: No rendering with stealth
+      - name: Build no-render stealth release (ARM64)
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --no-default-features --features stealth
+
+      # Build 3: With rendering
+      - name: Build render release (ARM64)
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --features render
+
+      # Build 4: With rendering and stealth
+      - name: Build render stealth release (ARM64)
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --features render,stealth
+
+      # Build 5: With all servo-parity features (storage, websocket, canvas2d)
+      - name: Build full release (ARM64)
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --features render,stealth,websocket,canvas2d
+
+      # Smoke test (V8 snapshot)
+      - name: Smoke test release binaries (ARM64)
+        shell: bash
+        run: |
+          BIN_DIR=target/aarch64-unknown-linux-gnu/release
+          for VARIANT in "" "-stealth"; do
+            if [ -z "$VARIANT" ]; then
+              BIN="$BIN_DIR/obscura"
+            else
+              # Stealth build may overwrite; use the regular build for smoke test
+              BIN="$BIN_DIR/obscura"
+            fi
+            if [ -f "$BIN" ]; then
+              "$BIN" fetch "data:text/html,<title>ok</title>" --eval "1+1"
+              echo "Smoke test passed for $BIN"
+            fi
+          done
+
+      # Stage artifacts
+      - name: Stage release artifacts
+        shell: bash
+        run: |
+          BIN_DIR=target/aarch64-unknown-linux-gnu/release
+          mkdir -p dist
+
+          # No-render variant
+          mkdir -p dist/no-render
+          cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/no-render/
+
+          # Build no-render stealth
+          cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --no-default-features --features stealth
+          mkdir -p dist/no-render-stealth
+          cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/no-render-stealth/
+
+          # Render variant
+          cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --features render
+          mkdir -p dist/default
+          cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/default/
+
+          # Render + stealth variant
+          cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --features render,stealth
+          mkdir -p dist/stealth
+          cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/stealth/
+
+          # Full build (all servo-parity features)
+          cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --features render,stealth,websocket,canvas2d
+          mkdir -p dist/full
+          cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/full/
+
+      # Package
+      - name: Package binaries
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          tar czf obscura-${VERSION}-aarch64-linux.tar.gz -C dist/default obscura obscura-worker
+          tar czf obscura-${VERSION}-aarch64-linux-stealth.tar.gz -C dist/stealth obscura obscura-worker
+          tar czf obscura-${VERSION}-aarch64-linux-no-render.tar.gz -C dist/no-render obscura obscura-worker
+          tar czf obscura-${VERSION}-aarch64-linux-no-render-stealth.tar.gz -C dist/no-render-stealth obscura obscura-worker
+          tar czf obscura-${VERSION}-aarch64-linux-full.tar.gz -C dist/full obscura obscura-worker
+
+      # Upload artifacts
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: obscura-linux-arm64-${{ github.run_id }}
+          path: |
+            obscura-*-aarch64-linux*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # Create a release when a tag is pushed
+  release:
+    name: Release / Linux ARM64
+    needs: build-arm64
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: obscura-linux-arm64-${{ github.run_id }}
+          path: dist
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true

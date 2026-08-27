@@ -15,6 +15,10 @@ stealth = ["obscura-net/stealth"]
 # (getBoundingClientRect, elementFromPoint, offset*), and with paint enabled,
 # rasterizes screenshots. Off by default so the scraping build stays lean.
 render = ["dep:obscura-render", "obscura-render/paint"]
+# WebSocket API: page-level WebSocket connections (servo parity).
+websocket = ["dep:tungstenite"]
+# Canvas 2D: richer path drawing API (servo-canvas parity).
+canvas2d = ["dep:kurbo"]
 
 [build-dependencies]
 deno_core = "0.350"
@@ -22,6 +26,7 @@ deno_core = "0.350"
 [dependencies]
 obscura-dom = { workspace = true }
 obscura-net = { workspace = true }
+obscura-storage = { workspace = true }
 deno_core = "0.350"
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -52,3 +57,7 @@ hkdf = "0.12"
 # CSPRNG for getRandomValues / randomUUID (replaces Math.random).
 getrandom = "0.2"
 obscura-render = { workspace = true, optional = true }
+# WebSocket client for page-level WebSocket API (servo parity).
+tungstenite = { workspace = true, optional = true }
+# Canvas 2D path rendering (servo-canvas parity).
+kurbo = { workspace = true, optional = true }

@@ -15,4 +15,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 precomputed-hash = "0.1"
 
-[dev-dependencies]
+[features]
+default = []
+webvtt = []

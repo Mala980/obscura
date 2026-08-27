@@ -17,6 +17,8 @@ path = "src/worker.rs"
 default = []
 stealth = ["obscura-browser/stealth", "obscura-net/stealth", "obscura-mcp/stealth"]
 render = ["obscura-browser/render", "obscura-cdp/render", "obscura-mcp/render"]
+websocket = ["obscura-js/websocket"]
+canvas2d = ["obscura-js/canvas2d"]
 
 [dependencies]
 obscura-browser = { workspace = true }
@@ -25,6 +27,7 @@ obscura-cdp = { workspace = true }
 obscura-dom = { workspace = true }
 obscura-net = { workspace = true }
 obscura-js = { workspace = true }
+obscura-storage = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
