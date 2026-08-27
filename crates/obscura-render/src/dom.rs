@@ -10977,7 +10977,7 @@ fn build_table(
                     let start = rows.len();
                     for row_child in rendered_children(tree, *cid) {
                         if styles
-                            .get(row_child)
+                            .get(&row_child)
                             .is_some_and(|s| s.is_table_row_box)
                         {
                             rows.push((row_child, 0));
@@ -11036,7 +11036,7 @@ fn build_table(
     for (r, &(tr, group_end)) in rows.iter().enumerate() {
         let mut c = 0usize;
         let row_children: Vec<NodeId> = if native_html_table {
-            tree.children(tr).collect()
+            tree.children(tr)
         } else if !native_html_table
             && styles
                 .get(&tr)
