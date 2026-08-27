@@ -3991,7 +3991,7 @@ fn op_random_bytes(len: u32) -> Result<Vec<u8>, deno_error::JsErrorBox> {
 #[op2]
 #[buffer]
 fn op_subtle_rsa_decrypt(
-    #[string] hash: &str,
+    #[string] _hash: &str,
     #[buffer] key: &[u8],
     #[buffer] data: &[u8],
 ) -> Result<Vec<u8>, deno_error::JsErrorBox> {
@@ -4116,7 +4116,7 @@ fn op_subtle_rsa_sign(
     let k = n.to_bytes_be().len();
     let mut em = vec![0x00; k];
     let ps_len = k - 3 - digest_info.len();
-    for i in 0..ps_len {
+    for _i in 0..ps_len {
         em[1 + ps_len] = 0xFF;
     }
     em[1 + ps_len] = 0x00;
@@ -4159,13 +4159,13 @@ fn op_subtle_ec_sign(
     if key.len() < 4 + x_len + 4 {
         return Err(crypto_err("ECDSA: truncated key"));
     }
-    let x_bytes = &key[4..4 + x_len];
+    let _x_bytes = &key[4..4 + x_len];
     let y_off = 4 + x_len;
     let y_len = u32::from_le_bytes([key[y_off], key[y_off + 1], key[y_off + 2], key[y_off + 3]]) as usize;
     if key.len() < y_off + 4 + y_len + 4 {
         return Err(crypto_err("ECDSA: truncated key"));
     }
-    let y_bytes = &key[y_off + 4..y_off + 4 + y_len];
+    let _y_bytes = &key[y_off + 4..y_off + 4 + y_len];
     let d_off = y_off + 4 + y_len;
     let d_len = u32::from_le_bytes([key[d_off], key[d_off + 1], key[d_off + 2], key[d_off + 3]]) as usize;
     if key.len() < d_off + 4 + d_len {
@@ -4489,7 +4489,7 @@ fn is_probable_prime(n: &num_bigint::BigUint, rounds: u32) -> bool {
     // Write n-1 as 2^r * d
     let mut d = n - 1u32;
     let mut r = 0u32;
-    while d % 2u32 == BigUint::ZERO {
+    while d.is_even() {
         d /= 2u32;
         r += 1;
     }
