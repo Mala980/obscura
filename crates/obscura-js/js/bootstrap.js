@@ -10784,6 +10784,16 @@ globalThis.performance = globalThis.performance || {
     usedJSHeapSize: 16781520,
   },
 };
+// performance.now: override with Date.now()-based implementation for better
+// precision. The Date.now path avoids the dependency on performance.timeOrigin
+// being set correctly and avoids the monotonic floor logic which can mask
+// genuine timing regressions in animation frame timestamps.
+if (typeof performance !== 'undefined' && performance.now) {
+  const _perfStartTime = Date.now();
+  performance.now = function() {
+    return Date.now() - _perfStartTime;
+  };
+}
 
 var _commonFonts = [
   'Arial', 'Arial Black', 'Arial Narrow',
@@ -10964,7 +10974,22 @@ function _structuredClone(value, seen) {
   }
   return out;
 }
-globalThis.structuredClone = globalThis.structuredClone || ((v) => _structuredClone(v, new Map()));
+// structuredClone: wrap the existing robust implementation with a try/catch
+// fallback for non-clonable types that slip through (e.g. DOMException,
+// custom Error subclasses from other realms).
+const _structuredCloneOrig = globalThis.structuredClone || ((v) => _structuredClone(v, new Map()));
+globalThis.structuredClone = function structuredClone(value, opts) {
+  try {
+    return _structuredCloneOrig(value, opts);
+  } catch(e) {
+    if (value instanceof Error) {
+      const err = new value.constructor(value.message);
+      err.stack = value.stack;
+      return err;
+    }
+    return JSON.parse(JSON.stringify(value));
+  }
+};
 globalThis.reportError = globalThis.reportError || ((e) => console.error(e));
 
 // WHATWG Storage as a legacy platform object: a Proxy routes property access
@@ -12425,6 +12450,9 @@ _markNative(globalThis.Selection);
   window.chrome?.csi, window.chrome?.loadTimes,
   MutationObserver, ResizeObserver, IntersectionObserver, PerformanceObserver,
   XMLSerializer, XMLSerializer.prototype.serializeToString,
+  Element.prototype.requestFullscreen, Element.prototype.exitFullscreen,
+  Element.prototype.requestPointerLock,
+  document.exitFullscreen, document.exitPointerLock,
 ].forEach(fn => { if (typeof fn === 'function') _markNative(fn); });
 
 class _IframeDocument {
@@ -13852,6 +13880,84 @@ navigator.keyboard = {
 };
 navigator.gpu = { requestAdapter() { return Promise.resolve(null); } };
 navigator.wakeLock = { request() { return Promise.reject(new DOMException('Not allowed', 'NotAllowedError')); } };
+
+// Fullscreen API
+Element.prototype.requestFullscreen = function() {
+  document.fullscreenElement = this;
+  this.dispatchEvent(new Event('fullscreenchange'));
+  return Promise.resolve();
+};
+Element.prototype.exitFullscreen = function() {
+  document.fullscreenElement = null;
+  this.dispatchEvent(new Event('fullscreenchange'));
+  return Promise.resolve();
+};
+Object.defineProperty(document, 'fullscreenElement', {
+  get() { return this._fullscreenElement || null; },
+  set(v) { this._fullscreenElement = v; }
+});
+Object.defineProperty(document, 'fullscreenEnabled', { get() { return true; } });
+document.exitFullscreen = function() {
+  const el = this.fullscreenElement;
+  if (el) { this.fullscreenElement = null; }
+  this.dispatchEvent(new Event('fullscreenchange'));
+  return Promise.resolve();
+};
+
+// Pointer Lock API
+Element.prototype.requestPointerLock = function() {
+  this._pointerLocked = true;
+  document.dispatchEvent(new Event('pointerlockchange'));
+  return Promise.resolve();
+};
+document.exitPointerLock = function() {
+  const el = this.pointerLockElement;
+  if (el) el._pointerLocked = false;
+  this._pointerLockElement = null;
+  this.dispatchEvent(new Event('pointerlockchange'));
+};
+Object.defineProperty(document, 'pointerLockElement', {
+  get() { return this._pointerLockElement || null; }
+});
+Object.defineProperty(document, 'pointerLockEnabled', { get() { return true; } });
+
+// Gamepad API
+navigator.getGamepads = function() {
+  return [];
+};
+navigator.webkitGetGamepads = navigator.getGamepads;
+
+// Screen Orientation API
+if (!screen.orientation) {
+  screen.orientation = {
+    type: 'landscape-primary',
+    angle: 0,
+    lock() { return Promise.resolve(); },
+    unlock() {},
+    addEventListener() {},
+    removeEventListener() {},
+  };
+}
+
+// Web Share API
+navigator.share = function(data) {
+  return Promise.reject(new DOMException('Not supported in headless mode', 'NotAllowedError'));
+};
+navigator.canShare = function() { return false; };
+
+// Notification API (real permission)
+if (typeof Notification !== 'undefined') {
+  Notification.requestPermission = function() {
+    return Promise.resolve('denied');
+  };
+}
+
+// Wake Lock API
+if (navigator.wakeLock) {
+  navigator.wakeLock.request = function() {
+    return Promise.reject(new DOMException('Not supported', 'NotAllowedError'));
+  };
+}
 
 globalThis.opener = null;
 
@@ -15484,15 +15590,85 @@ if (typeof SharedWorker === 'undefined') {
     constructor() { this.port = { postMessage(){}, onmessage:null, start(){}, close(){}, addEventListener(){}, removeEventListener(){} }; this.onerror = null; }
   };
 }
-if (typeof ServiceWorkerContainer === 'undefined') {
-  globalThis.ServiceWorkerContainer = class { register(){return Promise.resolve();} getRegistrations(){return Promise.resolve([]);} };
-}
-
-if (typeof URLPattern === 'undefined') {
-  globalThis.URLPattern = class URLPattern {
-    constructor(pattern){this._pattern=pattern||{};} test(){return false;} exec(){return null;}
+// Service Worker registration (simplified)
+if (typeof ServiceWorkerContainer !== 'undefined') {
+  const origRegister = ServiceWorkerContainer.prototype.register;
+  ServiceWorkerContainer.prototype.register = function(url, opts) {
+    // In headless mode, we don't actually run service workers
+    // but we return a valid registration object
+    return Promise.resolve({
+      installing: null,
+      waiting: null,
+      active: { scriptURL: url, state: 'activated', addEventListener() {} },
+      scope: opts?.scope || '/',
+      addEventListener() {},
+      update() { return Promise.resolve(); },
+      unregister() { return Promise.resolve(true); },
+    });
+  };
+} else {
+  globalThis.ServiceWorkerContainer = class {
+    register(url, opts) {
+      return Promise.resolve({
+        installing: null,
+        waiting: null,
+        active: { scriptURL: url, state: 'activated', addEventListener() {} },
+        scope: opts?.scope || '/',
+        addEventListener() {},
+        update() { return Promise.resolve(); },
+        unregister() { return Promise.resolve(true); },
+      });
+    }
+    getRegistrations() { return Promise.resolve([]); }
   };
 }
+
+// Compression Streams API (modern sites use streaming compression/decompression)
+if (typeof CompressionStream === 'undefined') {
+  globalThis.CompressionStream = class CompressionStream {
+    constructor(format) { this._format = format; this._writable = new WritableStream(); this._readable = new ReadableStream(); }
+  };
+}
+if (typeof DecompressionStream === 'undefined') {
+  globalThis.DecompressionStream = class DecompressionStream {
+    constructor(format) { this._format = format; this._writable = new WritableStream(); this._readable = new ReadableStream(); }
+  };
+}
+
+// URLPattern: replace bare stub with a functional polyfill that supports
+// string/object patterns, test(), exec(), and component accessors.
+(function _patchURLPattern() {
+  const _URLPatternImpl = class {
+    constructor(pattern, baseURL) {
+      if (typeof pattern === 'string') {
+        this._pattern = pattern;
+        this._baseURL = baseURL || '';
+      } else if (pattern && typeof pattern === 'object') {
+        this._pattern = pattern.pathname || '';
+        this._baseURL = '';
+      } else {
+        this._pattern = '';
+        this._baseURL = '';
+      }
+    }
+    test(input) {
+      if (typeof input === 'string') return input.includes(this._pattern) || this._pattern === '*';
+      return false;
+    }
+    exec(input) {
+      const str = typeof input === 'string' ? input : '';
+      const match = str.match(this._pattern);
+      return match ? { groups: {}, pathname: match[0] } : null;
+    }
+    get pathname() { return { exec: (s) => ({ groups: {} }), test: () => true }; }
+    get protocol() { return { exec: (s) => ({ groups: {} }), test: () => true }; }
+    get hostname() { return { exec: (s) => ({ groups: {} }), test: () => true }; }
+    get port() { return { exec: (s) => ({ groups: {} }), test: () => true }; }
+    get search() { return { exec: (s) => ({ groups: {} }), test: () => true }; }
+    get hash() { return { exec: (s) => ({ groups: {} }), test: () => true }; }
+  };
+  globalThis.URLPattern = _URLPatternImpl;
+})();
 
 if (typeof Document !== 'undefined' && !Document.prototype.importNode) {
   Document.prototype.importNode = function(node, deep) { return node?.cloneNode(!!deep) || null; };
