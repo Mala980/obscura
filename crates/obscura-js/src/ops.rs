@@ -4497,11 +4497,11 @@ fn is_probable_prime(n: &num_bigint::BigUint, rounds: u32) -> bool {
     let n_minus_1 = n - 1u32;
     for _ in 0..rounds {
         let mut a = random_number_below(&n_minus_1);
-        if a == BigUint::ZERO || a == BigUint::ONE {
+        if a == BigUint::ZERO || a == BigUint::from(1u32) {
             a = BigUint::from(2u32);
         }
         let mut x = a.modpow(&d, n);
-        if x == BigUint::ONE || x == n_minus_1 {
+        if x == BigUint::from(1u32) || x == n_minus_1 {
             continue;
         }
         let mut found = false;
@@ -4532,7 +4532,7 @@ fn random_odd_number(bits: usize) -> num_bigint::BigUint {
 
 fn random_number_below(upper: &num_bigint::BigUint) -> num_bigint::BigUint {
     use num_bigint::BigUint;
-    let byte_len = (upper.bits() + 7) / 8;
+    let byte_len: usize = ((upper.bits() + 7) / 8) as usize;
     let mut bytes = vec![0u8; byte_len];
     getrandom::getrandom(&mut bytes).ok();
     BigUint::from_bytes_be(&bytes) % upper
