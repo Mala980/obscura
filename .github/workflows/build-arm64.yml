@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
@@ -151,7 +151,7 @@ jobs:
           tar czf obscura-${VERSION}-aarch64-linux-full.tar.gz -C "$BIN_DIR" obscura obscura-worker
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: obscura-linux-arm64-${{ github.run_id }}
           path: obscura-*-aarch64-linux*.tar.gz
@@ -167,7 +167,7 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: obscura-linux-arm64-${{ github.run_id }}
           path: dist
