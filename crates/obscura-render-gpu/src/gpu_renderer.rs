@@ -22,7 +22,7 @@ pub struct GpuRenderer {
 unsafe impl Send for GpuRenderer {}
 unsafe impl Sync for GpuRenderer {}
 
-#[derive(Debug, thiserror::error)]
+#[derive(Debug, thiserror::Error)]
 pub enum RenderError {
     #[error("GPU initialization failed: {0}")]
     InitError(String),
