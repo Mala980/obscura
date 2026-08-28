@@ -12,7 +12,6 @@ env:
   CARGO_BUILD_JOBS: "2"
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
   build-arm64:
@@ -152,7 +151,7 @@ jobs:
           tar czf obscura-${VERSION}-aarch64-linux-full.tar.gz -C "$BIN_DIR" obscura obscura-worker
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: obscura-linux-arm64-${{ github.run_id }}
           path: obscura-*-aarch64-linux*.tar.gz
@@ -168,7 +167,7 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: obscura-linux-arm64-${{ github.run_id }}
           path: dist
