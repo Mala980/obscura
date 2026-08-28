@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use deno_core::op2;
@@ -21,8 +20,6 @@ use obscura_net::StealthHttpClient;
 use obscura_net::{
     CallbackRegistry, CookieJar, ObscuraHttpClient, RequestInfo, ResourceType, Response,
 };
-use tokio::sync::Mutex;
-
 #[cfg(feature = "render")]
 use serde::Deserialize;
 
@@ -52,7 +49,7 @@ impl MediaPlayerStore {
 }
 
 pub type InterceptCallback = Arc<
-    Mutex<
+    tokio::sync::Mutex<
         Option<Box<dyn Fn(String, String, String) -> Option<(u16, String, String)> + Send + Sync>>,
     >,
 >;
@@ -411,7 +408,7 @@ pub struct PendingFrameMessage {
 pub struct WsConnectionHandle {
     pub url: String,
     pub write_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    pub incoming: Arc<Mutex<VecDeque<String>>>,
+    pub incoming: Arc<std::sync::Mutex<VecDeque<String>>>,
     pub closed: Arc<AtomicBool>,
 }
 
@@ -427,7 +424,7 @@ pub struct SseEvent {
 
 pub struct EventSourceConnection {
     pub url: String,
-    pub incoming: Arc<Mutex<VecDeque<SseEvent>>>,
+    pub incoming: Arc<std::sync::Mutex<VecDeque<SseEvent>>>,
     pub close_tx: Option<tokio::sync::oneshot::Sender<()>>,
     pub closed: Arc<AtomicBool>,
 }
@@ -5323,46 +5320,60 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                 h
             };
 
-            let incoming = Arc::new(Mutex::new(VecDeque::new()));
+            let incoming = Arc::new(std::sync::Mutex::new(VecDeque::new()));
             let closed = Arc::new(AtomicBool::new(false));
-            let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let (write_tx, write_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
             let incoming_clone = incoming.clone();
             let closed_clone = closed.clone();
 
-            // Split the WebSocket so read and write halves live in separate threads.
-            let (read_half, write_half) = ws.split();
+            // Set a read timeout on the underlying TcpStream so we don't block
+            // forever when no messages arrive; this lets us drain outgoing messages
+            // periodically even when the server is silent.
+            {
+                let inner = ws.get_mut();
+                if let tungstenite::MaybeTlsStream::Plain(ref tcp) = *inner {
+                    let _ = tcp.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+                }
+            }
 
-            // Read thread: blocks on read_message() and pushes incoming text.
+            // Single I/O thread: owns the WebSocket and handles both reads and
+            // writes. tungstenite's synchronous WebSocket does not support split(),
+            // so we alternate between draining the outgoing channel and reading.
             std::thread::spawn(move || {
-                let mut rh = read_half;
                 loop {
-                    match rh.read_message() {
+                    // Drain all pending outgoing messages (non-blocking)
+                    while let Ok(msg) = write_rx.try_recv() {
+                        if ws.write_message(Message::Text(msg.into())).is_err() {
+                            closed_clone.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                    }
+
+                    // Read next incoming message (blocks up to read timeout)
+                    match ws.read_message() {
                         Ok(Message::Text(text)) => {
-                            incoming_clone.lock().unwrap().push_back(text);
+                            incoming_clone.lock().unwrap().push_back(text.to_string());
                         }
                         Ok(Message::Binary(data)) => {
-                            // Treat binary as UTF-8 text for page-level API.
-                            if let Ok(text) = String::from_utf8(data) {
+                            if let Ok(text) = String::from_utf8(data.to_vec()) {
                                 incoming_clone.lock().unwrap().push_back(text);
                             }
                         }
-                        Ok(Message::Close(_)) | Err(_) => break,
+                        Ok(Message::Close(_)) => break,
+                        Err(tungstenite::Error::Io(ref e))
+                            if e.kind() == std::io::ErrorKind::TimedOut
+                                || e.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            // Read timeout or no data available; loop back to
+                            // drain any outgoing messages that arrived meanwhile.
+                        }
+                        Err(_) => break,
                         _ => {}
                     }
                 }
+                let _ = ws.write_message(Message::Close(None));
                 closed_clone.store(true, Ordering::SeqCst);
-            });
-
-            // Write thread: drains the send channel and writes to the socket.
-            std::thread::spawn(move || {
-                let mut wh = write_half;
-                while let Some(msg) = write_rx.blocking_recv() {
-                    if wh.write_message(Message::Text(msg)).is_err() {
-                        break;
-                    }
-                }
-                let _ = wh.close(None);
             });
 
             // Store the connection handle in page state.
@@ -5483,7 +5494,7 @@ async fn op_eventsource_connect(
         h
     };
 
-    let incoming: Arc<Mutex<VecDeque<SseEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let incoming: Arc<std::sync::Mutex<VecDeque<SseEvent>>> = Arc::new(std::sync::Mutex::new(VecDeque::new()));
     let closed = Arc::new(AtomicBool::new(false));
     let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
 
