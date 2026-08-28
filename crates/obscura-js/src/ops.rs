@@ -425,7 +425,7 @@ pub struct SseEvent {
 pub struct EventSourceConnection {
     pub url: String,
     pub incoming: Arc<std::sync::Mutex<VecDeque<SseEvent>>>,
-    pub close_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    pub close_signal: Option<Arc<AtomicBool>>,
     pub closed: Arc<AtomicBool>,
 }
 
@@ -5310,7 +5310,8 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
     use tungstenite::Message;
 
     match tungstenite::connect(&url) {
-        Ok((_resp, ws_socket)) => {
+        Ok(result) => {
+            let ws_socket = result.1; // WebSocket is the second element
             let handle = {
                 let shared = state.borrow::<SharedState>().clone();
                 let mut gs = shared.borrow_mut();
@@ -5497,10 +5498,11 @@ async fn op_eventsource_connect(
 
     let incoming: Arc<std::sync::Mutex<VecDeque<SseEvent>>> = Arc::new(std::sync::Mutex::new(VecDeque::new()));
     let closed = Arc::new(AtomicBool::new(false));
-    let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
+    let close_signal = Arc::new(AtomicBool::new(false));
 
     let incoming_clone = incoming.clone();
     let closed_clone = closed.clone();
+    let close_signal_clone = close_signal.clone();
 
     tokio::spawn(async move {
         use futures_util::StreamExt;
@@ -5512,6 +5514,9 @@ async fn op_eventsource_connect(
         let mut current_id: Option<String> = None;
 
         loop {
+            if close_signal_clone.load(Ordering::SeqCst) {
+                break;
+            }
             tokio::select! {
                 chunk = stream.next() => {
                     match chunk {
@@ -5551,7 +5556,6 @@ async fn op_eventsource_connect(
                         Some(Err(_)) | None => break,
                     }
                 }
-                _ = close_rx => break,
             }
         }
 
@@ -5567,7 +5571,7 @@ async fn op_eventsource_connect(
             EventSourceConnection {
                 url,
                 incoming,
-                close_tx: Some(close_tx),
+                close_signal: Some(close_signal),
                 closed,
             },
         );
