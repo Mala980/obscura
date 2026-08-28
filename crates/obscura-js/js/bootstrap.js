@@ -6668,6 +6668,9 @@ class _WebGL {
   constructor(canvas, opts) {
     this._canvas = canvas;
     this._opts = opts || {};
+    this._gpuEnabled = !!(this._opts && this._opts._gpu);
+    this._gpuVendor = (this._opts && this._opts._vendor) || null;
+    this._gpuRenderer = (this._opts && this._opts._renderer) || null;
     this._width = (canvas && +canvas.getAttribute('width')) || 300;
     this._height = (canvas && +canvas.getAttribute('height')) || 150;
     this._framebuffer = new Uint8Array(this._width * this._height * 4);
@@ -6758,7 +6761,8 @@ class _WebGL {
       DEPTH_BITS: 24, STENCIL_BITS: 8, SUBPIXEL_BITS: 4,
       RED_BITS: 8, GREEN_BITS: 8, BLUE_BITS: 8, ALPHA_BITS: 8,
       IMPLEMENTATION_COLOR_READ_TYPE: 5121, IMPLEMENTATION_COLOR_READ_FORMAT: 6408,
-      37445: 'Google Inc. (Intel)', 37446: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+      37445: this._gpuVendor || 'Google Inc. (Intel)',
+      37446: this._gpuRenderer || 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',
       7938: 'WebGL 1.0 (OpenGL ES 3.0 Chromium)',
       35724: 'WebGL GLSL ES 1.0',
       COMPRESSED_TEXTURE_FORMATS: new Uint32Array(0),
@@ -13607,7 +13611,19 @@ HTMLCanvasElement.prototype.getContext = function getContext(type) {
   }
   if (type === 'webgl' || type === 'experimental-webgl' || type === 'webgl2') {
     if (!this._webglCtx) {
-      try { this._webglCtx = new _WebGL(this); }
+      try {
+        const w = (this && +this.getAttribute('width')) || 300;
+        const h = (this && +this.getAttribute('height')) || 150;
+        if (typeof Deno.core.ops.op_webgl_create_context === 'function') {
+          const gpuInfo = Deno.core.ops.op_webgl_create_context(w, h);
+          if (gpuInfo && gpuInfo.gpu) {
+            this._webglCtx = new _WebGL(this, { _gpu: true, _vendor: gpuInfo.vendor, _renderer: gpuInfo.renderer });
+          }
+        }
+        if (!this._webglCtx) {
+          this._webglCtx = new _WebGL(this);
+        }
+      }
       catch (_error) { return null; }
     }
     return this._webglCtx;

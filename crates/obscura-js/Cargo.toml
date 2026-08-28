@@ -21,6 +21,8 @@ websocket = ["dep:tungstenite"]
 canvas2d = ["dep:kurbo"]
 # Media playback (servo-media parity).
 media = ["dep:obscura-media"]
+# GPU-accelerated WebGL via glow (OpenGL bindings) + EGL headless context.
+webgl-gpu = ["dep:glow", "dep:egl"]
 
 [build-dependencies]
 deno_core = "0.350"
@@ -69,3 +71,8 @@ tungstenite = { workspace = true, optional = true }
 kurbo = { workspace = true, optional = true }
 # Media playback (servo-media parity).
 obscura-media = { workspace = true, optional = true }
+# GPU-accelerated WebGL: glow for OpenGL bindings.
+glow = { version = "0.16", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+egl = { version = "2.1", optional = true }

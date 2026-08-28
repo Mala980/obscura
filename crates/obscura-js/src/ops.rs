@@ -22,6 +22,8 @@ use obscura_net::{
 };
 #[cfg(feature = "render")]
 use serde::Deserialize;
+#[cfg(feature = "webgl-gpu")]
+use serde_json;
 
 use crate::import_map::ImportMap;
 use crate::write_stream::DocumentWriteStream;
@@ -5932,6 +5934,35 @@ fn op_worker_deliver_message(state: &OpState, worker_id: u32, #[string] message:
     gs.worker_manager.deliver_to_creator(worker_id, message)
 }
 
+#[cfg(feature = "webgl-gpu")]
+#[op2]
+#[serde]
+fn op_webgl_create_context(
+    _state: &OpState,
+    width: u32,
+    height: u32,
+) -> serde_json::Value {
+    match crate::webgl::GlContext::new_headless(width, height) {
+        Ok(_ctx) => serde_json::json!({
+            "gpu": true,
+            "vendor": "Google Inc. (Intel)",
+            "renderer": "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        }),
+        Err(_) => serde_json::json!({ "gpu": false }),
+    }
+}
+
+#[cfg(not(feature = "webgl-gpu"))]
+#[op2]
+#[serde]
+fn op_webgl_create_context(
+    _state: &OpState,
+    _width: u32,
+    _height: u32,
+) -> serde_json::Value {
+    serde_json::json!({ "gpu": false })
+}
+
 pub fn build_extension() -> Extension {
     let mut ops = vec![
         op_dom(),
@@ -5995,6 +6026,7 @@ pub fn build_extension() -> Extension {
         op_worker_terminate(),
         op_worker_get_script(),
         op_worker_deliver_message(),
+        op_webgl_create_context(),
     ];
     // Only registered when the media feature is compiled in. bootstrap.js
     // probes with typeof before calling, so the op's absence is a clean fallback.
