@@ -8,7 +8,7 @@ description = "GPU-accelerated rendering for Obscura using WebRender (servo pari
 
 [features]
 default = []
-webrender = ["dep:webrender", "dep:webrender-api", "dep:surfman", "dep:euclid"]
+gpu = ["dep:glow", "dep:image"]
 
 [dependencies]
 tokio = { workspace = true }
@@ -19,12 +19,6 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 obscura-dom = { workspace = true }
 obscura-render = { workspace = true }
-# WebRender (GPU 2D renderer from Firefox)
-webrender = { version = "0.70", optional = true }
-webrender-api = { version = "0.70", optional = true }
-# Surfman (GPU surface management)
-surfman = { version = "0.9", optional = true }
-# Euclid (geometry primitives for WebRender)
-euclid = { version = "0.22", optional = true }
-# Image for texture loading
+# GPU rendering via glow (OpenGL bindings)
+glow = { version = "0.16", optional = true }
 image = { version = "0.25", optional = true }
