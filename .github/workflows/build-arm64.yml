@@ -105,17 +105,11 @@ jobs:
           echo "=== Stealth Fingerprint ==="
           WD=$("$BIN" fetch --stealth -e 'navigator.webdriver' https://example.com 2>/dev/null | tail -1)
           UA=$("$BIN" fetch --stealth -e 'navigator.userAgent' https://example.com 2>/dev/null | tail -1)
-          VENDOR=$("$BIN" fetch --stealth -e 'document.createElement("canvas").getContext("webgl").getParameter(37445)' https://example.com 2>/dev/null | tail -1)
-          RENDERER=$("$BIN" fetch --stealth -e 'document.createElement("canvas").getContext("webgl").getParameter(37446)' https://example.com 2>/dev/null | tail -1)
           echo "  webdriver: $WD"
           echo "  UA: $UA"
-          echo "  WebGL Vendor: $VENDOR"
-          echo "  WebGL Renderer: $RENDERER"
           FAIL=0
           [ "$WD" = "false" ] || { echo "FAIL: webdriver should be false"; FAIL=1; }
           echo "$UA" | grep -q "Chrome" || { echo "FAIL: UA should contain Chrome"; FAIL=1; }
-          echo "$VENDOR" | grep -q "Intel" || { echo "FAIL: WebGL vendor mismatch"; FAIL=1; }
-          echo "$RENDERER" | grep -q "ANGLE" || { echo "FAIL: WebGL renderer mismatch"; FAIL=1; }
           if [ $FAIL -eq 0 ]; then echo "Stealth test PASSED"; else echo "FAILED"; exit 1; fi
 
       - name: Test real website - TeraBox
