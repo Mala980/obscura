@@ -474,7 +474,7 @@ async fn main() -> anyhow::Result<()> {
                     &wait_until,
                     user_agent,
                     stealth,
-                    eval,
+                    if eval.is_empty() { None } else { Some(eval.join(" ")) },
                     output,
                     quiet,
                     global_proxy,
@@ -767,7 +767,7 @@ async fn run_fetch(
     // immediately before screenshot paint. Ordinary CLI evaluation retains
     // its existing evaluate-then-settle behavior when this private variable is
     // absent.
-    let eval_str = if eval.is_empty() { None } else { Some(eval.join(" ")) };
+    let eval_str = eval;
     let eval_at_capture_boundary = screenshot.is_some()
         && eval_str.is_some()
         && std::env::var("OBSCURA_SHOT_EVAL_AT_CAPTURE").is_ok_and(|value| value == "1");
