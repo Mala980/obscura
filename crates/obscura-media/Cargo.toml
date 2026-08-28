@@ -7,8 +7,8 @@ repository.workspace = true
 description = "Media playback for Obscura: audio/video via GStreamer (servo-media parity)."
 
 [features]
-default = ["gstreamer"]
-gstreamer = ["gstreamer-app", "gstreamer-video", "gstreamer-audio"]
+default = []
+gstreamer = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:gstreamer-audio"]
 
 [dependencies]
 tokio = { workspace = true }
