@@ -22,7 +22,7 @@ canvas2d = ["dep:kurbo"]
 # Media playback (servo-media parity).
 media = ["dep:obscura-media"]
 # GPU-accelerated WebGL via glow (OpenGL bindings) + EGL headless context.
-webgl-gpu = ["dep:glow", "dep:egl"]
+webgl-gpu = ["dep:glow", "dep:obscura-render-gpu", "obscura-render-gpu/gpu"]
 # GPU-accelerated rendering via WebRender (servo parity).
 render-gpu = ["dep:obscura-render-gpu", "obscura-render-gpu/gpu"]
 
