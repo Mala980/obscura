@@ -9,6 +9,7 @@ members = [
     "crates/obscura-mcp",
     "crates/obscura-render",
     "crates/obscura-storage",
+    "crates/obscura-media",
     "crates/obscura-cli",
     "crates/obscura",
 ]
@@ -28,6 +29,7 @@ obscura-js = { path = "crates/obscura-js" }
 obscura-mcp = { path = "crates/obscura-mcp" }
 obscura-render = { path = "crates/obscura-render" }
 obscura-storage = { path = "crates/obscura-storage" }
+obscura-media = { path = "crates/obscura-media" }
 
 html5ever = "0.39"
 markup5ever = "0.39"
@@ -65,6 +67,11 @@ tungstenite = "0.26"
 # Canvas 2D rasterization (servo-canvas parity).
 kurbo = "0.11"
 peniko = "0.2"
+# Media playback (servo-media parity).
+gstreamer = { version = "0.23", optional = true }
+gstreamer-app = { version = "0.23", optional = true }
+gstreamer-video = { version = "0.23", optional = true }
+gstreamer-audio = { version = "0.23", optional = true }
 
 [patch.crates-io]
 # Keep the grid shrink-to-fit correction local until it lands upstream.

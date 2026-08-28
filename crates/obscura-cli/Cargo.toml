@@ -19,6 +19,7 @@ stealth = ["obscura-browser/stealth", "obscura-net/stealth", "obscura-mcp/stealt
 render = ["obscura-browser/render", "obscura-cdp/render", "obscura-mcp/render"]
 websocket = ["obscura-js/websocket"]
 canvas2d = ["obscura-js/canvas2d"]
+media = ["obscura-js/media"]
 
 [dependencies]
 obscura-browser = { workspace = true }

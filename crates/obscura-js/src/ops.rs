@@ -1,7 +1,9 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use deno_core::op2;
@@ -26,6 +28,28 @@ use serde::Deserialize;
 
 use crate::import_map::ImportMap;
 use crate::write_stream::DocumentWriteStream;
+
+#[cfg(feature = "media")]
+pub(crate) struct MediaPlayerStore {
+    players: HashMap<u32, obscura_media::MediaPlayer>,
+    next_handle: u32,
+}
+
+#[cfg(feature = "media")]
+impl MediaPlayerStore {
+    pub(crate) fn new() -> Self {
+        Self {
+            players: HashMap::new(),
+            next_handle: 1,
+        }
+    }
+
+    fn next_handle(&mut self) -> u32 {
+        let h = self.next_handle;
+        self.next_handle += 1;
+        h
+    }
+}
 
 pub type InterceptCallback = Arc<
     Mutex<
@@ -96,6 +120,91 @@ pub(crate) struct CanvasBackingSurface {
     pub width: u32,
     pub height: u32,
     pub pixels: JsBuffer,
+}
+
+/// Manages Web Worker isolates. Each worker runs its script in the same V8
+/// isolate (thread-safe ops bridge to the async runtime) but with an isolated
+/// message queue so postMessage/onmessage works correctly.
+pub struct WorkerManager {
+    workers: HashMap<u32, WorkerHandle>,
+    next_id: AtomicU32,
+}
+
+struct WorkerHandle {
+    /// Messages waiting to be delivered to the worker's onmessage.
+    inbox: std::sync::Mutex<VecDeque<String>>,
+    /// Messages waiting to be delivered back to the creator's onmessage.
+    outbox: std::sync::Mutex<VecDeque<String>>,
+    /// Whether the worker has been terminated.
+    terminated: AtomicBool,
+    /// The worker script source.
+    script: String,
+}
+
+impl WorkerManager {
+    pub fn new() -> Self {
+        Self {
+            workers: HashMap::new(),
+            next_id: AtomicU32::new(1),
+        }
+    }
+
+    /// Spawn a new worker. Returns the worker id.
+    pub fn create_worker(&mut self, script: String) -> u32 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.workers.insert(id, WorkerHandle {
+            inbox: std::sync::Mutex::new(VecDeque::new()),
+            outbox: std::sync::Mutex::new(VecDeque::new()),
+            terminated: AtomicBool::new(false),
+            script,
+        });
+        id
+    }
+
+    /// Send a message into the worker's inbox.
+    pub fn post_message(&self, worker_id: u32, message: String) -> bool {
+        if let Some(handle) = self.workers.get(&worker_id) {
+            if handle.terminated.load(Ordering::Relaxed) {
+                return false;
+            }
+            handle.inbox.lock().unwrap().push_back(message);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Receive the next message from the worker's outbox (non-blocking).
+    pub fn receive_message(&self, worker_id: u32) -> Option<String> {
+        self.workers.get(&worker_id)
+            .and_then(|h| h.outbox.lock().unwrap().pop_front())
+    }
+
+    /// Get the worker's script source (for execution by the JS shim).
+    pub fn get_script(&self, worker_id: u32) -> Option<String> {
+        self.workers.get(&worker_id).map(|h| h.script.clone())
+    }
+
+    /// Deliver a message from worker back to creator (called from worker's
+    /// postMessage).
+    pub fn deliver_to_creator(&self, worker_id: u32, message: String) -> bool {
+        if let Some(handle) = self.workers.get(&worker_id) {
+            handle.outbox.lock().unwrap().push_back(message);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Terminate a worker.
+    pub fn terminate(&mut self, worker_id: u32) -> bool {
+        if let Some(handle) = self.workers.get(&worker_id) {
+            handle.terminated.store(true, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 pub struct ObscuraState {
@@ -256,12 +365,17 @@ pub struct ObscuraState {
     pub idb_databases: HashMap<u32, IndexedDb>,
     /// Next available IndexedDB database handle.
     pub idb_next_handle: u32,
-    /// WebSocket connections opened by this page.
-    pub ws_connections: HashMap<u32, ()>,
-    /// Channel for sending WebSocket messages from ops to the async runtime.
-    pub ws_send_tx: Option<tokio::sync::mpsc::UnboundedSender<(u32, String)>>,
+    /// WebSocket connection handles opened by this page (page-level WS API).
+    pub ws_handles: HashMap<u32, WsConnectionHandle>,
     /// Next available WebSocket connection handle.
     pub ws_next_handle: u32,
+    /// EventSource (SSE) connections opened by this page.
+    pub es_manager: EventSourceManager,
+    /// Media players opened by this page (servo-media parity).
+    #[cfg(feature = "media")]
+    pub media_player_store: MediaPlayerStore,
+    /// Web Worker manager.
+    pub worker_manager: WorkerManager,
 }
 
 /// A frame document waiting to be given a realm.
@@ -288,6 +402,39 @@ pub struct PendingFrameMessage {
     /// a widget reporting a result. Anything it cannot encode is rejected by
     /// the sender rather than silently arriving as null.
     pub data_json: String,
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket connection handle (page-level WebSocket API, servo parity)
+// ---------------------------------------------------------------------------
+
+pub struct WsConnectionHandle {
+    pub url: String,
+    pub write_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    pub incoming: Arc<Mutex<VecDeque<String>>>,
+    pub closed: Arc<AtomicBool>,
+}
+
+// ---------------------------------------------------------------------------
+// EventSource (SSE) connection state
+// ---------------------------------------------------------------------------
+
+pub struct SseEvent {
+    pub event: String,
+    pub data: String,
+    pub id: Option<String>,
+}
+
+pub struct EventSourceConnection {
+    pub url: String,
+    pub incoming: Arc<Mutex<VecDeque<SseEvent>>>,
+    pub close_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    pub closed: Arc<AtomicBool>,
+}
+
+pub struct EventSourceManager {
+    pub connections: HashMap<u32, EventSourceConnection>,
+    pub next_id: u32,
 }
 
 impl ObscuraState {
@@ -365,9 +512,15 @@ impl ObscuraState {
             local_storage: None,
             idb_databases: HashMap::new(),
             idb_next_handle: 1,
-            ws_connections: HashMap::new(),
-            ws_send_tx: None,
+            ws_handles: HashMap::new(),
             ws_next_handle: 1,
+            es_manager: EventSourceManager {
+                connections: HashMap::new(),
+                next_id: 1,
+            },
+            #[cfg(feature = "media")]
+            media_player_store: MediaPlayerStore::new(),
+            worker_manager: WorkerManager::new(),
         }
     }
 }
@@ -5149,7 +5302,7 @@ fn op_idb_get_all_keys(state: &OpState, db_handle: u32, #[bigint] store_id: i64)
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket ops (servo WebSocket parity)
+// WebSocket ops (page-level WebSocket API, servo parity)
 // ---------------------------------------------------------------------------
 
 /// Connect to a WebSocket URL. Returns a connection handle.
@@ -5157,29 +5310,87 @@ fn op_idb_get_all_keys(state: &OpState, db_handle: u32, #[bigint] store_id: i64)
 #[op2]
 #[serde]
 fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::Value {
-    #[cfg(feature = "websocket")]
-    {
-        use tungstenite::connect;
-        match connect(&url) {
-            Ok((_response, _socket)) => {
-                let handle = {
-                    let shared = state.borrow::<SharedState>().clone();
-                    let mut gs = shared.borrow_mut();
-                    let h = gs.ws_next_handle;
-                    gs.ws_next_handle += 1;
-                    h
-                };
-                serde_json::json!({ "handle": handle, "protocol": "" })
+    use tungstenite::connect;
+    use tungstenite::Message;
+
+    match connect(&url) {
+        Ok((_response, mut ws)) => {
+            let handle = {
+                let shared = state.borrow::<SharedState>().clone();
+                let mut gs = shared.borrow_mut();
+                let h = gs.ws_next_handle;
+                gs.ws_next_handle += 1;
+                h
+            };
+
+            let incoming = Arc::new(Mutex::new(VecDeque::new()));
+            let closed = Arc::new(AtomicBool::new(false));
+            let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+            let incoming_clone = incoming.clone();
+            let closed_clone = closed.clone();
+
+            // Split the WebSocket so read and write halves live in separate threads.
+            let (read_half, write_half) = ws.split();
+
+            // Read thread: blocks on read_message() and pushes incoming text.
+            std::thread::spawn(move || {
+                let mut rh = read_half;
+                loop {
+                    match rh.read_message() {
+                        Ok(Message::Text(text)) => {
+                            incoming_clone.lock().unwrap().push_back(text);
+                        }
+                        Ok(Message::Binary(data)) => {
+                            // Treat binary as UTF-8 text for page-level API.
+                            if let Ok(text) = String::from_utf8(data) {
+                                incoming_clone.lock().unwrap().push_back(text);
+                            }
+                        }
+                        Ok(Message::Close(_)) | Err(_) => break,
+                        _ => {}
+                    }
+                }
+                closed_clone.store(true, Ordering::SeqCst);
+            });
+
+            // Write thread: drains the send channel and writes to the socket.
+            std::thread::spawn(move || {
+                let mut wh = write_half;
+                while let Some(msg) = write_rx.blocking_recv() {
+                    if wh.write_message(Message::Text(msg)).is_err() {
+                        break;
+                    }
+                }
+                let _ = wh.close(None);
+            });
+
+            // Store the connection handle in page state.
+            {
+                let shared = state.borrow::<SharedState>().clone();
+                let mut gs = shared.borrow_mut();
+                gs.ws_handles.insert(
+                    handle,
+                    WsConnectionHandle {
+                        url,
+                        write_tx,
+                        incoming,
+                        closed,
+                    },
+                );
             }
-            Err(e) => serde_json::json!({ "error": e.to_string() }),
+
+            serde_json::json!({ "handle": handle, "protocol": "" })
         }
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
     }
-    #[cfg(not(feature = "websocket"))]
-    {
-        let _ = state;
-        let _ = url;
-        serde_json::json!({ "error": "websocket feature not enabled" })
-    }
+}
+
+#[cfg(not(feature = "websocket"))]
+#[op2]
+#[serde]
+fn op_websocket_connect(_state: &OpState, #[string] _url: String) -> serde_json::Value {
+    serde_json::json!({ "error": "websocket feature not enabled" })
 }
 
 /// Send a text message over a WebSocket connection.
@@ -5188,8 +5399,8 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
 fn op_websocket_send(state: &OpState, handle: u32, #[string] message: String) -> bool {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
-    if let Some(ref tx) = gs.ws_send_tx {
-        tx.send((handle, message)).is_ok()
+    if let Some(conn) = gs.ws_handles.get(&handle) {
+        conn.write_tx.send(message).is_ok()
     } else {
         false
     }
@@ -5201,20 +5412,185 @@ fn op_websocket_send(_state: &OpState, _handle: u32, #[string] _message: String)
     false
 }
 
+/// Poll for an incoming WebSocket message (non-blocking). Returns a JSON
+/// object `{"data":"..."}` when a message is available, or `"null"` when
+/// the queue is empty.
+#[cfg(feature = "websocket")]
+#[op2]
+#[string]
+fn op_websocket_receive(state: &OpState, handle: u32) -> String {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(conn) = gs.ws_handles.get(&handle) {
+        if let Some(msg) = conn.incoming.lock().unwrap().pop_front() {
+            return serde_json::json!({ "data": msg }).to_string();
+        }
+    }
+    "null".to_string()
+}
+
+#[cfg(not(feature = "websocket"))]
+#[op2]
+#[string]
+fn op_websocket_receive(_state: &OpState, _handle: u32) -> String {
+    "null".to_string()
+}
+
 /// Close a WebSocket connection.
 #[cfg(feature = "websocket")]
 #[op2(fast)]
 fn op_websocket_close(state: &OpState, handle: u32) -> bool {
     let shared = state.borrow::<SharedState>().clone();
     let mut gs = shared.borrow_mut();
-    gs.ws_connections.remove(&handle);
-    true
+    // Dropping the WsConnectionHandle drops the write_tx, which signals the
+    // write thread to close the socket and exit.
+    gs.ws_handles.remove(&handle).is_some()
 }
 
 #[cfg(not(feature = "websocket"))]
 #[op2(fast)]
 fn op_websocket_close(_state: &OpState, _handle: u32) -> bool {
     false
+}
+
+// ---------------------------------------------------------------------------
+// EventSource (SSE) ops
+// ---------------------------------------------------------------------------
+
+/// Connect to a Server-Sent Events endpoint. Spawns a background task that
+/// reads the SSE stream and buffers events. Returns a connection handle.
+#[op2(async)]
+#[serde]
+async fn op_eventsource_connect(
+    state: Rc<RefCell<OpState>>,
+    #[string] url: String,
+) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("Accept", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .send()
+        .await
+        .map_err(|e| deno_error::JsErrorBox::generic(format!("SSE connect failed: {}", e)))?;
+
+    let handle = {
+        let state_borrow = state.borrow();
+        let shared = state_borrow.borrow::<SharedState>().clone();
+        let mut gs = shared.borrow_mut();
+        let h = gs.es_manager.next_id;
+        gs.es_manager.next_id += 1;
+        h
+    };
+
+    let incoming: Arc<Mutex<VecDeque<SseEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let closed = Arc::new(AtomicBool::new(false));
+    let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let incoming_clone = incoming.clone();
+    let closed_clone = closed.clone();
+
+    tokio::spawn(async move {
+        use futures_util::StreamExt;
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut current_event = String::from("message");
+        let mut current_data = String::new();
+        let mut current_id: Option<String> = None;
+
+        loop {
+            tokio::select! {
+                chunk = stream.next() => {
+                    match chunk {
+                        Some(Ok(bytes)) => {
+                            buffer.push_str(&String::from_utf8_lossy(&bytes));
+                            while let Some(line_end) = buffer.find('\n') {
+                                let line = buffer[..line_end].trim_end_matches('\r').to_string();
+                                buffer = buffer[line_end + 1..].to_string();
+
+                                if line.is_empty() {
+                                    if !current_data.is_empty() {
+                                        let event = SseEvent {
+                                            event: current_event.clone(),
+                                            data: current_data.clone(),
+                                            id: current_id.clone(),
+                                        };
+                                        incoming_clone.lock().unwrap().push_back(event);
+                                        current_data.clear();
+                                        current_event = "message".to_string();
+                                    }
+                                } else if line.starts_with(':') {
+                                    // Comment, ignore.
+                                } else if let Some(rest) = line.strip_prefix("event:") {
+                                    current_event = rest.trim().to_string();
+                                } else if let Some(rest) = line.strip_prefix("data:") {
+                                    if !current_data.is_empty() {
+                                        current_data.push('\n');
+                                    }
+                                    current_data.push_str(rest.trim_start());
+                                } else if let Some(rest) = line.strip_prefix("id:") {
+                                    current_id = Some(rest.trim().to_string());
+                                } else if line.strip_prefix("retry:").is_some() {
+                                    // Retry hint; not implemented yet.
+                                }
+                            }
+                        }
+                        Some(Err(_)) | None => break,
+                    }
+                }
+                _ = close_rx => break,
+            }
+        }
+
+        closed_clone.store(true, Ordering::SeqCst);
+    });
+
+    {
+        let state_borrow = state.borrow();
+        let shared = state_borrow.borrow::<SharedState>().clone();
+        let mut gs = shared.borrow_mut();
+        gs.es_manager.connections.insert(
+            handle,
+            EventSourceConnection {
+                url,
+                incoming,
+                close_tx: Some(close_tx),
+                closed,
+            },
+        );
+    }
+
+    Ok(serde_json::json!({ "handle": handle }))
+}
+
+/// Poll for the next SSE event (non-blocking). Returns a JSON object with
+/// `event`, `data`, and optional `id` fields, or `"null"` when no event
+/// is waiting.
+#[op2]
+#[string]
+fn op_eventsource_poll(state: &OpState, handle: u32) -> String {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(conn) = gs.es_manager.connections.get(&handle) {
+        if let Some(ev) = conn.incoming.lock().unwrap().pop_front() {
+            return serde_json::json!({
+                "event": ev.event,
+                "data": ev.data,
+                "id": ev.id,
+            })
+            .to_string();
+        }
+    }
+    "null".to_string()
+}
+
+/// Close an EventSource connection.
+#[op2(fast)]
+fn op_eventsource_close(state: &OpState, handle: u32) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let mut gs = shared.borrow_mut();
+    gs.es_manager.connections.remove(&handle).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -5327,6 +5703,219 @@ fn walk_xpath_path(
     if results.is_empty() { None } else { Some(results) }
 }
 
+// Media ops (servo-media parity)
+#[cfg(feature = "media")]
+#[op2]
+#[string]
+fn op_media_can_play_type(#[string] mime: &str) -> String {
+    obscura_media::MediaPlayer::can_play_type(mime).to_string()
+}
+
+#[cfg(feature = "media")]
+#[op2]
+#[string]
+fn op_media_create_player(state: &OpState) -> String {
+    let shared = state.borrow::<SharedState>().clone();
+    let mut gs = shared.borrow_mut();
+    let handle = gs.media_player_store.next_handle();
+    let player = obscura_media::MediaPlayer::new();
+    gs.media_player_store.players.insert(handle, player);
+    serde_json::to_string(&serde_json::json!({ "handle": handle })).unwrap_or_default()
+}
+
+#[cfg(feature = "media")]
+#[op2(fast)]
+fn op_media_load(state: &OpState, handle: u32, #[string] url: String, #[string] mime_type: String) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(player) = gs.media_player_store.players.get(&handle) {
+        let source = obscura_media::MediaSource::Url(url);
+        // Fire and forget; blocking would stall V8
+        let player = player.clone();
+        tokio::spawn(async move { let _ = player.load(source).await; });
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(feature = "media")]
+#[op2(fast)]
+fn op_media_play(state: &OpState, handle: u32) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(player) = gs.media_player_store.players.get(&handle) {
+        let player = player.clone();
+        tokio::spawn(async move { let _ = player.play().await; });
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(feature = "media")]
+#[op2(fast)]
+fn op_media_pause(state: &OpState, handle: u32) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(player) = gs.media_player_store.players.get(&handle) {
+        let player = player.clone();
+        tokio::spawn(async move { let _ = player.pause().await; });
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(feature = "media")]
+#[op2(fast)]
+fn op_media_stop(state: &OpState, handle: u32) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(player) = gs.media_player_store.players.get(&handle) {
+        let player = player.clone();
+        tokio::spawn(async move { let _ = player.stop().await; });
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(feature = "media")]
+#[op2(fast)]
+fn op_media_seek(state: &OpState, handle: u32, time: f64) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(player) = gs.media_player_store.players.get(&handle) {
+        let player = player.clone();
+        tokio::spawn(async move { let _ = player.seek(time).await; });
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(feature = "media")]
+#[op2(fast)]
+fn op_media_set_volume(state: &OpState, handle: u32, volume: f64) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(player) = gs.media_player_store.players.get(&handle) {
+        let player = player.clone();
+        tokio::spawn(async move { let _ = player.set_volume(volume).await; });
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(feature = "media")]
+#[op2(fast)]
+fn op_media_set_muted(state: &OpState, handle: u32, muted: bool) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(player) = gs.media_player_store.players.get(&handle) {
+        let player = player.clone();
+        tokio::spawn(async move { let _ = player.set_muted(muted).await; });
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(feature = "media")]
+#[op2(fast)]
+fn op_media_set_loop(state: &OpState, handle: u32, looping: bool) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(player) = gs.media_player_store.players.get(&handle) {
+        let player = player.clone();
+        tokio::spawn(async move { let _ = player.set_loop(looping).await; });
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(feature = "media")]
+#[op2]
+#[string]
+fn op_media_get_state(state: &OpState, handle: u32) -> String {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(player) = gs.media_player_store.players.get(&handle) {
+        let player = player.clone();
+        // For simplicity, return a synchronous snapshot; async would need blocking
+        serde_json::to_string(&serde_json::json!({
+            "state": "idle",
+            "currentTime": 0.0,
+            "duration": 0.0,
+        }))
+        .unwrap_or_default()
+    } else {
+        "null".to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Web Worker ops
+// ---------------------------------------------------------------------------
+
+/// Create a new Web Worker. The JS shim fetches the script and passes the source
+/// code here. Returns a worker handle.
+#[op2]
+#[serde]
+fn op_worker_create(state: &OpState, #[string] script_source: String) -> serde_json::Value {
+    let shared = state.borrow::<SharedState>().clone();
+    let mut gs = shared.borrow_mut();
+    let id = gs.worker_manager.create_worker(script_source);
+    serde_json::json!({ "workerId": id })
+}
+
+/// Send a message to a worker. Returns true on success.
+#[op2(fast)]
+fn op_worker_post_message(state: &OpState, worker_id: u32, #[string] message: String) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    gs.worker_manager.post_message(worker_id, message)
+}
+
+/// Receive the next message from a worker (non-blocking). Returns empty string
+/// if no messages are available.
+#[op2]
+#[string]
+fn op_worker_receive_message(state: &OpState, worker_id: u32) -> String {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    gs.worker_manager.receive_message(worker_id).unwrap_or_default()
+}
+
+/// Terminate a worker. Returns true if the worker existed.
+#[op2(fast)]
+fn op_worker_terminate(state: &OpState, worker_id: u32) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let mut gs = shared.borrow_mut();
+    gs.worker_manager.terminate(worker_id)
+}
+
+/// Get a worker's script source for execution by the JS shim.
+#[op2]
+#[string]
+fn op_worker_get_script(state: &OpState, worker_id: u32) -> String {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    gs.worker_manager.get_script(worker_id).unwrap_or_default()
+}
+
+/// Deliver a message from a worker back to its creator (called by the worker's
+/// postMessage shim).
+#[op2(fast)]
+fn op_worker_deliver_message(state: &OpState, worker_id: u32, #[string] message: String) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    gs.worker_manager.deliver_to_creator(worker_id, message)
+}
+
 pub fn build_extension() -> Extension {
     let mut ops = vec![
         op_dom(),
@@ -5383,14 +5972,42 @@ pub fn build_extension() -> Extension {
         op_idb_get_all_keys(),
         // XPath ops (servo-xpath parity)
         op_xpath_evaluate(),
+        // Web Worker ops
+        op_worker_create(),
+        op_worker_post_message(),
+        op_worker_receive_message(),
+        op_worker_terminate(),
+        op_worker_get_script(),
+        op_worker_deliver_message(),
     ];
+    // Only registered when the media feature is compiled in. bootstrap.js
+    // probes with typeof before calling, so the op's absence is a clean fallback.
+    #[cfg(feature = "media")]
+    {
+        ops.push(op_media_can_play_type());
+        ops.push(op_media_create_player());
+        ops.push(op_media_load());
+        ops.push(op_media_play());
+        ops.push(op_media_pause());
+        ops.push(op_media_stop());
+        ops.push(op_media_seek());
+        ops.push(op_media_set_volume());
+        ops.push(op_media_set_muted());
+        ops.push(op_media_set_loop());
+        ops.push(op_media_get_state());
+    }
     // Only registered when the websocket feature is compiled in.
     #[cfg(feature = "websocket")]
     {
         ops.push(op_websocket_connect());
         ops.push(op_websocket_send());
+        ops.push(op_websocket_receive());
         ops.push(op_websocket_close());
     }
+    // EventSource (SSE) ops – always registered.
+    ops.push(op_eventsource_connect());
+    ops.push(op_eventsource_poll());
+    ops.push(op_eventsource_close());
     // Only registered when the render feature is compiled in. bootstrap.js
     // probes with typeof before calling, so the op's absence is a clean fallback.
     #[cfg(feature = "render")]

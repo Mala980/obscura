@@ -1,0 +1,23 @@
+[package]
+name = "obscura-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Media playback for Obscura: audio/video via GStreamer (servo-media parity)."
+
+[features]
+default = ["gstreamer"]
+gstreamer = ["gstreamer-app", "gstreamer-video", "gstreamer-audio"]
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+gstreamer = { version = "0.23", optional = true }
+gstreamer-app = { version = "0.23", optional = true }
+gstreamer-video = { version = "0.23", optional = true }
+gstreamer-audio = { version = "0.23", optional = true }

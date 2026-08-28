@@ -5955,15 +5955,67 @@ class HTMLMediaElement extends Element {
   static HAVE_CURRENT_DATA = 2;
   static HAVE_FUTURE_DATA = 3;
   static HAVE_ENOUGH_DATA = 4;
-  canPlayType(_type) { return ''; }
-  load() {}
+  constructor(nid) {
+    super(nid);
+    this._mediaPlayerHandle = 0;
+    this._mediaState = 'idle';
+  }
+  canPlayType(type) {
+    if (typeof Deno.core.ops.op_media_can_play_type === 'function') {
+      return Deno.core.ops.op_media_can_play_type(String(type || ''));
+    }
+    return '';
+  }
+  load() {
+    if (this._mediaPlayerHandle) {
+      if (typeof Deno.core.ops.op_media_stop === 'function') {
+        Deno.core.ops.op_media_stop(this._mediaPlayerHandle);
+      }
+      this._mediaPlayerHandle = 0;
+      this._mediaState = 'idle';
+    }
+    const src = this.src;
+    if (!src) return;
+    if (typeof Deno.core.ops.op_media_create_player === 'function') {
+      try {
+        const result = JSON.parse(Deno.core.ops.op_media_create_player());
+        this._mediaPlayerHandle = result.handle || 0;
+        this._mediaState = 'loading';
+        if (typeof Deno.core.ops.op_media_load === 'function') {
+          const mime = this._guessMimeType(src);
+          Deno.core.ops.op_media_load(this._mediaPlayerHandle, src, mime);
+        }
+      } catch (_e) {}
+    }
+  }
+  _guessMimeType(src) {
+    if (!src) return '';
+    const ext = src.split('?')[0].split('.').pop().toLowerCase();
+    const map = {
+      mp4: 'video/mp4', webm: 'video/webm', ogg: 'video/ogg', ogv: 'video/ogg',
+      mov: 'video/quicktime', m4v: 'video/mp4',
+      mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg',
+      weba: 'audio/webm', aac: 'audio/aac', m4a: 'audio/mp4',
+    };
+    return map[ext] || '';
+  }
   play() {
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_play === 'function') {
+      Deno.core.ops.op_media_play(this._mediaPlayerHandle);
+      this._mediaState = 'playing';
+      return Promise.resolve();
+    }
     return Promise.reject(new DOMException(
       "The element has no supported sources.",
       "NotSupportedError",
     ));
   }
-  pause() {}
+  pause() {
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_pause === 'function') {
+      Deno.core.ops.op_media_pause(this._mediaPlayerHandle);
+      this._mediaState = 'paused';
+    }
+  }
   get NETWORK_EMPTY() { return HTMLMediaElement.NETWORK_EMPTY; }
   get NETWORK_IDLE() { return HTMLMediaElement.NETWORK_IDLE; }
   get NETWORK_LOADING() { return HTMLMediaElement.NETWORK_LOADING; }
@@ -5973,27 +6025,74 @@ class HTMLMediaElement extends Element {
   get HAVE_CURRENT_DATA() { return HTMLMediaElement.HAVE_CURRENT_DATA; }
   get HAVE_FUTURE_DATA() { return HTMLMediaElement.HAVE_FUTURE_DATA; }
   get HAVE_ENOUGH_DATA() { return HTMLMediaElement.HAVE_ENOUGH_DATA; }
-  get paused() { return true; }
-  get ended() { return false; }
-  get networkState() { return HTMLMediaElement.NETWORK_EMPTY; }
-  get readyState() { return HTMLMediaElement.HAVE_NOTHING; }
+  get paused() { return this._mediaState === 'paused'; }
+  get ended() { return this._mediaState === 'ended'; }
+  get networkState() {
+    if (!this._mediaPlayerHandle) return HTMLMediaElement.NETWORK_EMPTY;
+    if (this._mediaState === 'loading') return HTMLMediaElement.NETWORK_LOADING;
+    return HTMLMediaElement.NETWORK_IDLE;
+  }
+  get readyState() {
+    if (!this._mediaPlayerHandle) return HTMLMediaElement.HAVE_NOTHING;
+    return HTMLMediaElement.HAVE_NOTHING;
+  }
   get error() { return null; }
   get seeking() { return false; }
-  get currentTime() { return 0; }
-  set currentTime(v) {}
-  get duration() { return NaN; }
-  get volume() { return 1; }
-  set volume(v) {}
-  get muted() { return false; }
-  set muted(v) {}
+  get currentTime() {
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_get_state === 'function') {
+      try {
+        const st = JSON.parse(Deno.core.ops.op_media_get_state(this._mediaPlayerHandle));
+        return st.currentTime || 0;
+      } catch (_e) {}
+    }
+    return 0;
+  }
+  set currentTime(v) {
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_seek === 'function') {
+      Deno.core.ops.op_media_seek(this._mediaPlayerHandle, Number(v) || 0);
+    }
+  }
+  get duration() {
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_get_state === 'function') {
+      try {
+        const st = JSON.parse(Deno.core.ops.op_media_get_state(this._mediaPlayerHandle));
+        return st.duration || NaN;
+      } catch (_e) {}
+    }
+    return NaN;
+  }
+  get volume() { return this._volume || 1; }
+  set volume(v) {
+    this._volume = Math.max(0, Math.min(1, Number(v) || 0));
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_set_volume === 'function') {
+      Deno.core.ops.op_media_set_volume(this._mediaPlayerHandle, this._volume);
+    }
+  }
+  get muted() { return this._muted || false; }
+  set muted(v) {
+    this._muted = !!v;
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_set_muted === 'function') {
+      Deno.core.ops.op_media_set_muted(this._mediaPlayerHandle, this._muted);
+    }
+  }
+  get loop() { return this._loop || false; }
+  set loop(v) {
+    this._loop = !!v;
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_set_loop === 'function') {
+      Deno.core.ops.op_media_set_loop(this._mediaPlayerHandle, this._loop);
+    }
+  }
   get src() {
     const raw = this.getAttribute("src");
     if (!raw) return "";
     try { return new URL(raw, this.baseURI || globalThis.location?.href || "about:blank").href; }
     catch (_error) { return raw; }
   }
-  set src(v) { this.setAttribute('src', v); }
-  get currentSrc() { return ""; }
+  set src(v) {
+    this.setAttribute('src', v);
+    this.load();
+  }
+  get currentSrc() { return this.src || ""; }
   get textTracks() {
     return TextTrackList.from(
       Array.from(this.querySelectorAll("track")).map((element) => element.track)
@@ -14079,111 +14178,132 @@ if (!navigator.requestMIDIAccess) {
 globalThis.opener = null;
 
 globalThis.Worker = class Worker {
-  constructor(url) {
+  constructor(url, options) {
+    if (typeof url !== 'string') {
+      throw new TypeError("Failed to construct 'Worker': 1 argument required, but only 0 present.");
+    }
     this.onmessage = null;
     this.onerror = null;
     this._terminated = false;
     this._listeners = {};
     const worker = this;
 
+    // Resolve relative URLs against the current page.
     let resolvedUrl = url;
-    if (typeof url === 'string') {
-      const blob = globalThis.__blobStore?.[url];
-      if (blob) {
-        worker._code = blob;
-        // Auto-start on next tick so caller can set onmessage first.
-        setTimeout(() => worker._autoRun(), 0);
-        return;
-      }
-      // Resolve relative URLs against the current page.
-      if (!url.startsWith('http') && !url.startsWith('blob:') && !url.startsWith('data:')) {
-        try { resolvedUrl = new URL(url, globalThis.location?.href || '').href; } catch(e) {}
-      }
-      (async () => {
+    if (!url.startsWith('http') && !url.startsWith('blob:') && !url.startsWith('data:')) {
+      try { resolvedUrl = new URL(url, globalThis.location?.href || '').href; } catch(e) {}
+    }
+
+    // Fetch the worker script source.
+    let scriptPromise;
+    const blob = globalThis.__blobStore?.[url];
+    if (blob) {
+      scriptPromise = Promise.resolve(blob);
+    } else if (url.startsWith('data:')) {
+      scriptPromise = Promise.resolve((function() {
+        try {
+          const comma = url.indexOf(',');
+          const meta = url.slice(5, comma);
+          const payload = url.slice(comma + 1);
+          if (meta.split(';').some(p => p.toLowerCase() === 'base64')) {
+            return atob(payload.replace(/[\r\n\t\f ]/g, ''));
+          }
+          return decodeURIComponent(payload);
+        } catch(e) { return ''; }
+      })());
+    } else {
+      scriptPromise = (async () => {
         try {
           const resp = await fetch(resolvedUrl);
-          worker._code = await resp.text();
-          if (!worker._terminated) worker._autoRun();
-        } catch(e) { if (worker.onerror) worker.onerror(e); }
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          return await resp.text();
+        } catch(e) {
+          if (worker.onerror) worker.onerror(e);
+          return '';
+        }
       })();
     }
+
+    scriptPromise.then(code => {
+      if (worker._terminated || !code) return;
+      worker._code = code;
+      // Register the worker with the native manager.
+      const result = Deno.core.ops.op_worker_create(code);
+      worker._workerId = result?.workerId ?? 0;
+      if (worker._workerId) {
+        // Start polling for messages from the worker.
+        worker._pollMessages();
+      }
+    });
   }
-  _makeScope() {
-    const worker = this;
-    // WorkerGlobalScope defined + no document property → IS_WORKER_SCOPE = true in creepjs
-    const scope = {
-      WorkerGlobalScope: function WorkerGlobalScope() {},
-      DedicatedWorkerGlobalScope: function DedicatedWorkerGlobalScope() {},
-      postMessage: (msg) => {
-        if (worker._terminated) return;
-        const evt = { data: msg };
-        if (worker.onmessage) worker.onmessage(evt);
-        const ls = worker._listeners['message'] || [];
-        for (const h of ls) h(evt);
-      },
-      addEventListener: (type, fn) => {
-        if (!scope._ev) scope._ev = {};
-        if (!scope._ev[type]) scope._ev[type] = [];
-        scope._ev[type].push(fn);
-      },
-      close: () => { worker._terminated = true; },
-      crypto: globalThis.crypto,
-      Crypto: globalThis.Crypto,
-      TextEncoder: globalThis.TextEncoder,
-      TextDecoder: globalThis.TextDecoder,
-      atob: globalThis.atob,
-      btoa: globalThis.btoa,
-      setTimeout: globalThis.setTimeout,
-      setInterval: globalThis.setInterval,
-      clearTimeout: globalThis.clearTimeout,
-      clearInterval: globalThis.clearInterval,
-      scheduler: globalThis.scheduler,
-      Scheduler: globalThis.Scheduler,
-      fetch: globalThis.fetch,
-      console: globalThis.console,
-      performance: globalThis.performance,
-      location: globalThis.location,
-    };
-    scope.self = scope;
-    return scope;
-  }
-  _autoRun() {
-    if (this._terminated || !this._code) return;
-    const worker = this;
-    const scope = worker._makeScope();
-    try {
-      const fn = new Function('self', 'postMessage', 'addEventListener', 'close', worker._code);
-      fn(scope, scope.postMessage, scope.addEventListener, scope.close);
-    } catch(e) {
-      console.error('Worker error:', e.message);
-      if (worker.onerror) worker.onerror(e);
-    }
-  }
-  postMessage(data) {
+
+  _pollMessages() {
     if (this._terminated) return;
     const worker = this;
-    setTimeout(() => {
-      if (worker._terminated || !worker._code) return;
-      const scope = worker._makeScope();
+    const poll = () => {
+      if (worker._terminated) return;
       try {
-        const fn = new Function('self', 'postMessage', 'addEventListener', 'close', worker._code);
-        fn(scope, scope.postMessage, scope.addEventListener, scope.close);
-        const evs = (scope._ev && scope._ev['message']) || [];
-        if (evs.length) { for (const h of evs) h({ data }); }
-        else if (scope.onmessage) scope.onmessage({ data });
-      } catch(e) {
-        console.error('Worker error:', e.message);
-        if (worker.onerror) worker.onerror(e);
+        const msg = Deno.core.ops.op_worker_receive_message(worker._workerId);
+        if (msg) {
+          const evt = { data: msg, type: 'message', target: worker, currentTarget: worker };
+          if (worker.onmessage) {
+            try { worker.onmessage(evt); } catch(e) { console.error(e); }
+          }
+          const ls = worker._listeners['message'] || [];
+          for (const h of ls) {
+            try { h(evt); } catch(e) { console.error(e); }
+          }
+        }
+      } catch(e) { /* worker may have been terminated */ }
+      // Poll again on next tick.
+      if (!worker._terminated) {
+        Deno.core.ops.op_async_runtime_available()
+          ? Deno.core.ops.op_posted_task().then(poll)
+          : setTimeout(poll, 0);
       }
-    }, 0);
+    };
+    // Start the poll loop via a posted task.
+    Deno.core.ops.op_async_runtime_available()
+      ? Deno.core.ops.op_posted_task().then(poll)
+      : setTimeout(poll, 0);
   }
-  terminate() { this._terminated = true; }
+
+  postMessage(data) {
+    if (this._terminated) return;
+    let serialized;
+    try { serialized = typeof data === 'string' ? data : JSON.stringify(data); }
+    catch(e) { throw new DOMException('Could not serialize message:', 'DataCloneError'); }
+    if (this._workerId) {
+      Deno.core.ops.op_worker_post_message(this._workerId, serialized);
+    }
+  }
+
+  terminate() {
+    if (this._terminated) return;
+    this._terminated = true;
+    if (this._workerId) {
+      Deno.core.ops.op_worker_terminate(this._workerId);
+    }
+  }
+
   addEventListener(type, fn) {
     if (!this._listeners[type]) this._listeners[type] = [];
     this._listeners[type].push(fn);
   }
+
   removeEventListener(type, fn) {
-    if (this._listeners[type]) this._listeners[type] = this._listeners[type].filter(h => h !== fn);
+    if (this._listeners[type]) {
+      this._listeners[type] = this._listeners[type].filter(h => h !== fn);
+    }
+  }
+
+  dispatchEvent(event) {
+    if (!event || this._terminated) return true;
+    const handlers = this._listeners[event.type] || [];
+    for (const h of handlers) {
+      try { h.call(this, event); } catch(e) { console.error(e); }
+    }
+    return true;
   }
 };
 
@@ -15097,13 +15217,6 @@ if (typeof FileReader === 'undefined') {
   Object.assign(globalThis.FileReader.prototype, { EMPTY: 0, LOADING: 1, DONE: 2 });
 }
 
-// Real network sockets aren't implemented; we don't have a runtime WS / SSE
-// client in V8. But pages that wait for an `open` event (Vite HMR clients
-// embedded on docs sites, live-dashboards, anything calling
-// `await new Promise(r => ws.addEventListener('open', r))`) silently hang
-// forever otherwise. Fire `open` after a microtask so the consumer at least
-// proceeds; subsequent messages never arrive, which is no worse than the
-// current "no signal whatsoever" behaviour.
 // Minimal EventTarget shared by socket-like classes. Real `EventTarget` is
 // currently aliased to `Node`, which would drag DOM-tree assumptions into a
 // `WebSocket`. Defining a private shim avoids that.
@@ -15133,29 +15246,115 @@ function _makeListenerBox(self) {
 
 if (typeof EventSource === 'undefined') {
   globalThis.EventSource = class EventSource {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 2;
+
     constructor(url, init) {
+      if (typeof url !== 'string' || !url) {
+        throw new TypeError("Failed to construct 'EventSource': The URL '' is invalid.");
+      }
       this.url = url;
-      this.readyState = 0; // CONNECTING
+      this.readyState = EventSource.CONNECTING;
       this.withCredentials = !!(init && init.withCredentials);
-      this.onopen = null; this.onmessage = null; this.onerror = null;
+      this.onopen = null;
+      this.onmessage = null;
+      this.onerror = null;
       _makeListenerBox(this);
-      Promise.resolve().then(() => {
-        if (this.readyState !== 0) return;
-        this.readyState = 1; // OPEN
-        const ev = new Event('open');
-        if (typeof this.onopen === 'function') { try { this.onopen(ev); } catch (e) {} }
-        try { this.dispatchEvent(ev); } catch (e) {}
-      });
+
+      this._handle = -1;
+      this._closed = false;
+      this._pollTimer = null;
+
+      const self = this;
+      (async function() {
+        try {
+          const ops = Deno.core.ops;
+          if (typeof ops.op_eventsource_connect !== 'function') {
+            self._fireError('EventSource not supported');
+            return;
+          }
+          const result = await ops.op_eventsource_connect(url);
+          if (self._closed) {
+            ops.op_eventsource_close(result.handle);
+            return;
+          }
+          if (result.error) {
+            self._fireError(result.error);
+            return;
+          }
+          self._handle = result.handle;
+          self.readyState = EventSource.OPEN;
+          const ev = new Event('open');
+          if (typeof self.onopen === 'function') { try { self.onopen(ev); } catch(e) {} }
+          try { self.dispatchEvent(ev); } catch(e) {}
+          self._startPolling();
+        } catch(e) {
+          self._fireError(e.message || String(e));
+        }
+      })();
     }
-    close() { this.readyState = 2; }
-    static CONNECTING = 0; static OPEN = 1; static CLOSED = 2;
+
+    _startPolling() {
+      const self = this;
+      function poll() {
+        if (self._closed || self._handle < 0) return;
+        try {
+          const raw = Deno.core.ops.op_eventsource_poll(self._handle);
+          if (raw && raw !== 'null') {
+            const evt = JSON.parse(raw);
+            const eventType = evt.event || 'message';
+            const data = evt.data || '';
+            const id = evt.id || null;
+
+            const event = new MessageEvent(eventType, {
+              data: data,
+              lastEventId: id || '',
+              origin: new URL(self.url).origin,
+            });
+
+            if (eventType === 'message') {
+              if (typeof self.onmessage === 'function') { try { self.onmessage(event); } catch(e) {} }
+            }
+            try { self.dispatchEvent(event); } catch(e) {}
+          }
+        } catch(e) { /* ignore poll errors */ }
+        if (!self._closed) {
+          self._pollTimer = _scheduleAfter(50, poll);
+        }
+      }
+      poll();
+    }
+
+    _fireError(message) {
+      this.readyState = EventSource.CLOSED;
+      const ev = new Event('error');
+      ev.message = message;
+      if (typeof this.onerror === 'function') { try { this.onerror(ev); } catch(e) {} }
+      try { this.dispatchEvent(ev); } catch(e) {}
+    }
+
+    close() {
+      if (this._closed) return;
+      this._closed = true;
+      this.readyState = EventSource.CLOSED;
+      if (this._pollTimer !== null) { clearTimeout(this._pollTimer); this._pollTimer = null; }
+      if (this._handle >= 0) {
+        try { Deno.core.ops.op_eventsource_close(this._handle); } catch(e) {}
+        this._handle = -1;
+      }
+    }
   };
 }
 
 if (typeof WebSocket === 'undefined') {
   globalThis.WebSocket = class WebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+
     constructor(url, protocols) {
-      // Validate URL scheme per spec — Chrome throws SyntaxError for non-ws/wss URLs
       if (typeof url !== 'string' || !/^wss?:\/\//i.test(url)) {
         throw new DOMException(
           "Failed to construct 'WebSocket': The URL '" + url + "' is invalid.",
@@ -15163,31 +15362,111 @@ if (typeof WebSocket === 'undefined') {
         );
       }
       this.url = url;
-      this.readyState = 0; // CONNECTING
+      this.readyState = WebSocket.CONNECTING;
       this.bufferedAmount = 0;
       this.binaryType = 'blob';
       this.extensions = '';
       this.protocol = Array.isArray(protocols) ? (protocols[0] || '') : (protocols || '');
-      this.onopen = null; this.onmessage = null; this.onerror = null; this.onclose = null;
+      this.onopen = null;
+      this.onmessage = null;
+      this.onerror = null;
+      this.onclose = null;
       _makeListenerBox(this);
-      Promise.resolve().then(() => {
-        if (this.readyState !== 0) return;
-        this.readyState = 1; // OPEN
-        const ev = new Event('open');
-        if (typeof this.onopen === 'function') { try { this.onopen(ev); } catch (e) {} }
-        try { this.dispatchEvent(ev); } catch (e) {}
-      });
+
+      this._handle = -1;
+      this._closed = false;
+      this._pollTimer = null;
+
+      const self = this;
+      (async function() {
+        try {
+          const ops = Deno.core.ops;
+          if (typeof ops.op_websocket_connect !== 'function') {
+            self._fireError('WebSocket not supported');
+            return;
+          }
+          const result = await ops.op_websocket_connect(url);
+          if (self._closed) {
+            try { ops.op_websocket_close(result.handle); } catch(e) {}
+            return;
+          }
+          if (result.error) {
+            self._fireError(result.error);
+            return;
+          }
+          self._handle = result.handle;
+          if (result.protocol) self.protocol = result.protocol;
+          self.readyState = WebSocket.OPEN;
+          const ev = new Event('open');
+          if (typeof self.onopen === 'function') { try { self.onopen(ev); } catch(e) {} }
+          try { self.dispatchEvent(ev); } catch(e) {}
+          self._startPolling();
+        } catch(e) {
+          self._fireError(e.message || String(e));
+        }
+      })();
     }
-    send(data) { /* drop; no real socket */ }
-    close(code, reason) {
-      if (this.readyState >= 2) return;
-      this.readyState = 3; // CLOSED
+
+    _startPolling() {
+      const self = this;
+      function poll() {
+        if (self._closed || self._handle < 0) return;
+        try {
+          const raw = Deno.core.ops.op_websocket_receive(self._handle);
+          if (raw && raw !== 'null') {
+            const msg = JSON.parse(raw);
+            const data = msg.data || '';
+            const event = new MessageEvent('message', { data: data });
+            if (typeof self.onmessage === 'function') { try { self.onmessage(event); } catch(e) {} }
+            try { self.dispatchEvent(event); } catch(e) {}
+          }
+        } catch(e) { /* ignore poll errors */ }
+        if (!self._closed) {
+          self._pollTimer = _scheduleAfter(10, poll);
+        }
+      }
+      poll();
+    }
+
+    _fireError(message) {
+      this.readyState = WebSocket.CLOSED;
+      const ev = new Event('error');
+      ev.message = message;
+      if (typeof this.onerror === 'function') { try { this.onerror(ev); } catch(e) {} }
+      try { this.dispatchEvent(ev); } catch(e) {}
+      this._closeCleanup(1006, '', false);
+    }
+
+    _closeCleanup(code, reason, wasClean) {
+      if (this._pollTimer !== null) { clearTimeout(this._pollTimer); this._pollTimer = null; }
       const ev = new Event('close');
-      ev.code = code || 1000; ev.reason = reason || ''; ev.wasClean = true;
-      if (typeof this.onclose === 'function') { try { this.onclose(ev); } catch (e) {} }
-      try { this.dispatchEvent(ev); } catch (e) {}
+      ev.code = code || 1000;
+      ev.reason = reason || '';
+      ev.wasClean = wasClean !== undefined ? wasClean : true;
+      if (typeof this.onclose === 'function') { try { this.onclose(ev); } catch(e) {} }
+      try { this.dispatchEvent(ev); } catch(e) {}
     }
-    static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+
+    send(data) {
+      if (this.readyState !== WebSocket.OPEN) {
+        throw new DOMException("Failed to execute 'send' on 'WebSocket': The connection state is not 'OPEN'.", 'InvalidStateError');
+      }
+      if (this._handle < 0) return;
+      const text = typeof data === 'string' ? data : String(data);
+      try { Deno.core.ops.op_websocket_send(this._handle, text); } catch(e) {}
+    }
+
+    close(code, reason) {
+      if (this.readyState >= WebSocket.CLOSING) return;
+      this.readyState = WebSocket.CLOSING;
+      const self = this;
+      if (this._handle >= 0) {
+        try { Deno.core.ops.op_websocket_close(this._handle); } catch(e) {}
+        this._handle = -1;
+      }
+      this.readyState = WebSocket.CLOSED;
+      this._closeCleanup(code || 1000, reason || '', true);
+    }
   };
 }
 

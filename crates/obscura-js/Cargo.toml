@@ -19,6 +19,8 @@ render = ["dep:obscura-render", "obscura-render/paint"]
 websocket = ["dep:tungstenite"]
 # Canvas 2D: richer path drawing API (servo-canvas parity).
 canvas2d = ["dep:kurbo"]
+# Media playback (servo-media parity).
+media = ["dep:obscura-media"]
 
 [build-dependencies]
 deno_core = "0.350"
@@ -39,10 +41,11 @@ psl = "2"
 tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["stream"] }
 html5ever = { workspace = true }
 deno_error = "0.6"
 base64 = { workspace = true }
+futures-util = "0.3"
 sha1 = "0.10"
 sha2 = "0.10"
 # WebCrypto (crypto.subtle) primitives. RustCrypto, pure Rust, no CMake/OpenSSL,
@@ -64,3 +67,5 @@ obscura-render = { workspace = true, optional = true }
 tungstenite = { workspace = true, optional = true }
 # Canvas 2D path rendering (servo-canvas parity).
 kurbo = { workspace = true, optional = true }
+# Media playback (servo-media parity).
+obscura-media = { workspace = true, optional = true }
