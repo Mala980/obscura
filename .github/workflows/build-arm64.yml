@@ -12,6 +12,7 @@ env:
   CARGO_BUILD_JOBS: "2"
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
   build-arm64:
@@ -20,7 +21,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -41,12 +42,107 @@ jobs:
       - name: Build full release (ARM64)
         run: cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --features render,stealth,websocket,canvas2d
 
-      - name: Smoke test release binary
+      - name: Smoke test - basic fetch
         shell: bash
         run: |
           BIN=target/aarch64-unknown-linux-gnu/release/obscura
-          "$BIN" fetch "data:text/html,<title>ok</title>" --eval "1+1"
+          echo "--- HTML dump ---"
+          "$BIN" fetch "data:text/html,<title>ok</title>" --dump html
+          echo "--- Text dump ---"
+          "$BIN" fetch "data:text/html,<title>ok</title>" --dump text
+          echo "--- JS eval ---"
+          RESULT=$("$BIN" fetch "data:text/html,<title>ok</title>" -e '1+1')
+          echo "eval result: $RESULT"
           echo "Smoke test passed"
+
+      - name: Test Web APIs
+        shell: bash
+        run: |
+          BIN=target/aarch64-unknown-linux-gnu/release/obscura
+          URL="https://example.com"
+          FAIL=0
+          check() {
+            local name="$1" expr="$2"
+            result=$("$BIN" fetch "$URL" -e "$expr" 2>/dev/null | tail -1)
+            if [ "$result" = "true" ]; then
+              echo "  PASS: $name = $result"
+            else
+              echo "  FAIL: $name = $result (expected true)"
+              FAIL=1
+            fi
+          }
+          echo "=== Web API Tests ==="
+          check "Fullscreen" "document.exitFullscreen!==undefined"
+          check "PointerLock" "document.exitPointerLock!==undefined"
+          check "Canvas2D" "document.createElement('canvas').getContext('2d')!==null"
+          check "WebGL" "document.createElement('canvas').getContext('webgl')!==null"
+          check "WebSocket" "WebSocket!==undefined"
+          check "EventSource" "EventSource!==undefined"
+          check "Worker" "Worker!==undefined"
+          check "IndexedDB" "indexedDB!==undefined"
+          check "Gamepad" "navigator.getGamepads!==undefined"
+          check "Crypto" "crypto.subtle!==undefined"
+          check "GPU" "navigator.gpu!==undefined"
+          check "Streams" "ReadableStream!==undefined"
+          check "CSS.supports" "CSS.supports('display:flex')"
+          check "Bluetooth" "navigator.bluetooth!==undefined"
+          check "USB" "navigator.usb!==undefined"
+          check "Serial" "navigator.serial!==undefined"
+          check "HID" "navigator.hid!==undefined"
+          check "NFC" "NDEFReader!==undefined"
+          check "MIDI" "navigator.requestMIDIAccess!==undefined"
+          check "Clipboard" "navigator.clipboard!==undefined"
+          check "URLPattern" "URLPattern!==undefined"
+          check "FontFace" "FontFace!==undefined"
+          check "BarcodeDetector" "BarcodeDetector!==undefined"
+          check "EyeDropper" "EyeDropper!==undefined"
+          check "TextDetector" "TextDetector!==undefined"
+          check "Performance" "performance.now()>0"
+          echo ""
+          if [ $FAIL -eq 0 ]; then
+            echo "All Web API tests PASSED"
+          else
+            echo "Some Web API tests FAILED"
+            exit 1
+          fi
+
+      - name: Test Stealth fingerprint
+        shell: bash
+        run: |
+          BIN=target/aarch64-unknown-linux-gnu/release/obscura
+          URL="https://example.com"
+          echo "=== Stealth Fingerprint ==="
+          echo -n "webdriver: " && "$BIN" fetch --stealth -e 'navigator.webdriver' "$URL" 2>/dev/null | tail -1
+          echo -n "UA: " && "$BIN" fetch --stealth -e 'navigator.userAgent' "$URL" 2>/dev/null | tail -1
+          echo -n "WebGL Vendor: " && "$BIN" fetch --stealth -e 'document.createElement("canvas").getContext("webgl").getParameter(37445)' "$URL" 2>/dev/null | tail -1
+          echo -n "WebGL Renderer: " && "$BIN" fetch --stealth -e 'document.createElement("canvas").getContext("webgl").getParameter(37446)' "$URL" 2>/dev/null | tail -1
+          echo "Stealth test passed"
+
+      - name: Test screenshot
+        shell: bash
+        run: |
+          BIN=target/aarch64-unknown-linux-gnu/release/obscura
+          "$BIN" fetch -s /tmp/test_screenshot.png "data:text/html,<title>screenshot</title><h1>Hello</h1>"
+          if [ -f /tmp/test_screenshot.png ]; then
+            SIZE=$(stat -c%s /tmp/test_screenshot.png)
+            echo "Screenshot OK: ${SIZE} bytes"
+          else
+            echo "Screenshot FAILED"
+            exit 1
+          fi
+
+      - name: Test links dump
+        shell: bash
+        run: |
+          BIN=target/aarch64-unknown-linux-gnu/release/obscura
+          LINKS=$("$BIN" fetch --dump links "data:text/html,<a href='https://example.com'>Link1</a>" 2>/dev/null | tail -1)
+          echo "Links: $LINKS"
+          if echo "$LINKS" | grep -q "example.com"; then
+            echo "Links dump OK"
+          else
+            echo "Links dump FAILED"
+            exit 1
+          fi
 
       - name: Package binaries
         shell: bash
