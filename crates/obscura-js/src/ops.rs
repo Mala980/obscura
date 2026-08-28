@@ -5345,16 +5345,20 @@ fn op_idb_get_all_keys(state: &OpState, db_handle: u32, #[bigint] store_id: i64)
 
 /// Connect to a WebSocket URL. Returns a connection handle.
 #[cfg(feature = "websocket")]
-#[op2]
+#[op2(async)]
 #[serde]
-fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::Value {
+async fn op_websocket_connect(
+    state: Rc<RefCell<OpState>>,
+    #[string] url: String,
+) -> Result<serde_json::Value, deno_error::JsErrorBox> {
     use tungstenite::Message;
 
-    match tungstenite::connect(&url) {
-        Ok(result) => {
-            let ws_socket = result.0; // WebSocket is the FIRST element in tungstenite 0.26
+    let connect_result = tokio_tungstenite::connect_async(&url).await;
+    match connect_result {
+        Ok((ws_stream, response)) => {
             let handle = {
-                let shared = state.borrow::<SharedState>().clone();
+                let state_borrow = state.borrow();
+                let shared = state_borrow.borrow::<SharedState>().clone();
                 let mut gs = shared.borrow_mut();
                 let h = gs.ws_next_handle;
                 gs.ws_next_handle += 1;
@@ -5364,26 +5368,35 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
             let incoming: Arc<std::sync::Mutex<VecDeque<WsMessage>>> =
                 Arc::new(std::sync::Mutex::new(VecDeque::new()));
             let closed = Arc::new(AtomicBool::new(false));
-            let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<WsMessage>();
+            let (write_tx, mut write_rx) =
+                tokio::sync::mpsc::unbounded_channel::<WsMessage>();
 
             let incoming_clone = incoming.clone();
             let closed_clone = closed.clone();
             let closed_clone2 = closed.clone();
 
-            // Wrap the WebSocket in a Mutex for thread-safe access
-            let ws = std::sync::Arc::new(std::sync::Mutex::new(ws_socket));
+            // Use tokio_tungstenite's WebSocket stream for async I/O
+            let ws_stream = std::sync::Arc::new(std::sync::Mutex::new(ws_stream));
 
-            // Single I/O thread: owns the WebSocket and handles both reads and writes.
-            std::thread::spawn(move || {
+            // Single I/O task: owns the WebSocket and handles both reads and writes.
+            tokio::spawn(async move {
                 loop {
                     // Drain all pending outgoing messages (non-blocking)
                     while let Ok(msg) = write_rx.try_recv() {
-                        let Ok(mut wh) = ws.lock() else { break };
+                        let Ok(mut wh) = ws_stream.lock() else { break };
                         let result = match msg {
-                            WsMessage::Text(ref t) => wh.write_message(Message::Text(t.clone().into())),
-                            WsMessage::Binary(ref b) => wh.write_message(Message::Binary(b.clone().into())),
-                            WsMessage::Ping(ref b) => wh.write_message(Message::Ping(b.clone().into())),
-                            WsMessage::Pong(ref b) => wh.write_message(Message::Pong(b.clone().into())),
+                            WsMessage::Text(ref t) => {
+                                wh.send(Message::Text(t.clone().into())).await
+                            }
+                            WsMessage::Binary(ref b) => {
+                                wh.send(Message::Binary(b.clone().into())).await
+                            }
+                            WsMessage::Ping(ref b) => {
+                                wh.send(Message::Ping(b.clone().into())).await
+                            }
+                            WsMessage::Pong(ref b) => {
+                                wh.send(Message::Pong(b.clone().into())).await
+                            }
                             WsMessage::Close { code, ref reason } => {
                                 let frame = tungstenite::protocol::frame::CloseFrame {
                                     code: tungstenite::protocol::frame::coding::CloseCode::from(
@@ -5391,7 +5404,7 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                                     ),
                                     reason: std::borrow::Cow::Owned(reason.clone()),
                                 };
-                                wh.write_message(Message::Close(Some(frame)))
+                                wh.send(Message::Close(Some(frame))).await
                             }
                         };
                         if result.is_err() {
@@ -5400,10 +5413,18 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                         }
                     }
 
-                    // Read next incoming message
+                    // Read next incoming message (async, non-blocking via poll)
                     let read_result = {
-                        let Ok(mut wh) = ws.lock() else { break };
-                        wh.read_message()
+                        let Ok(mut wh) = ws_stream.lock() else { break };
+                        // Use a tokio::task::yield_now to allow other tasks to run
+                        // while we poll for the next message
+                        tokio::task::spawn_blocking({
+                            let mut wh = wh;
+                            || wh.read_message()
+                        })
+                        .await
+                        .ok()
+                        .flatten()
                     };
 
                     match read_result {
@@ -5438,22 +5459,23 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                             if e.kind() == std::io::ErrorKind::TimedOut
                                 || e.kind() == std::io::ErrorKind::WouldBlock =>
                         {
-                            // Read timeout; loop back to drain outgoing messages
-                            std::thread::sleep(std::time::Duration::from_millis(5));
+                            // Read timeout; yield to allow other tasks
+                            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
                         }
                         Err(_) => break,
                     }
                 }
                 // Send close frame
-                if let Ok(mut wh) = ws.lock() {
-                    let _ = wh.write_message(Message::Close(None));
+                if let Ok(mut wh) = ws_stream.lock() {
+                    let _ = wh.send(Message::Close(None)).await;
                 }
                 closed_clone2.store(true, Ordering::SeqCst);
             });
 
             // Store the connection handle in page state.
             {
-                let shared = state.borrow::<SharedState>().clone();
+                let state_borrow = state.borrow();
+                let shared = state_borrow.borrow::<SharedState>().clone();
                 let mut gs = shared.borrow_mut();
                 gs.ws_handles.insert(
                     handle,
@@ -5466,17 +5488,28 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                 );
             }
 
-            serde_json::json!({ "handle": handle, "protocol": "" })
+            let protocol = response
+                .headers()
+                .get("Sec-WebSocket-Protocol")
+                .map(|h| h.to_str().unwrap_or(""))
+                .unwrap_or("");
+
+            Ok(serde_json::json!({ "handle": handle, "protocol": protocol }))
         }
-        Err(e) => serde_json::json!({ "error": e.to_string() }),
+        Err(e) => Err(deno_error::JsErrorBox::generic(format!(
+            "WebSocket connect failed: {}",
+            e
+        ))),
     }
 }
 
 #[cfg(not(feature = "websocket"))]
-#[op2]
-#[serde]
-fn op_websocket_connect(_state: &OpState, #[string] _url: String) -> serde_json::Value {
-    serde_json::json!({ "error": "websocket feature not enabled" })
+#[op2(async)]
+async fn op_websocket_connect(
+    _state: Rc<RefCell<OpState>>,
+    #[string] _url: String,
+) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+    Err(deno_error::JsErrorBox::generic("websocket feature not enabled"))
 }
 
 /// Send a text message over a WebSocket connection.
@@ -5632,15 +5665,6 @@ async fn op_eventsource_connect(
     state: Rc<RefCell<OpState>>,
     #[string] url: String,
 ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get(&url)
-        .header("Accept", "text/event-stream")
-        .header("Cache-Control", "no-cache")
-        .send()
-        .await
-        .map_err(|e| deno_error::JsErrorBox::generic(format!("SSE connect failed: {}", e)))?;
-
     let handle = {
         let state_borrow = state.borrow();
         let shared = state_borrow.borrow::<SharedState>().clone();
@@ -5655,6 +5679,7 @@ async fn op_eventsource_connect(
     let close_signal = Arc::new(AtomicBool::new(false));
     let last_event_id = Arc::new(std::sync::Mutex::new(None::<String>));
     let retry_ms = Arc::new(std::sync::Mutex::new(3000u64));
+    let url_clone = url.clone();
 
     let incoming_clone = incoming.clone();
     let closed_clone = closed.clone();
@@ -5662,65 +5687,134 @@ async fn op_eventsource_connect(
     let last_event_id_clone = last_event_id.clone();
     let retry_ms_clone = retry_ms.clone();
 
+    // Spawn reconnection loop
     tokio::spawn(async move {
         use futures_util::StreamExt;
-
-        let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
-        let mut current_event = String::from("message");
-        let mut current_data = String::new();
-        let mut current_id: Option<String> = None;
 
         loop {
             if close_signal_clone.load(Ordering::SeqCst) {
                 break;
             }
-            tokio::select! {
-                chunk = stream.next() => {
-                    match chunk {
-                        Some(Ok(bytes)) => {
-                            buffer.push_str(&String::from_utf8_lossy(&bytes));
-                            while let Some(line_end) = buffer.find('\n') {
-                                let line = buffer[..line_end].trim_end_matches('\r').to_string();
-                                buffer = buffer[line_end + 1..].to_string();
 
-                                if line.is_empty() {
-                                    if !current_data.is_empty() {
-                                        let event = SseEvent {
-                                            event: current_event.clone(),
-                                            data: current_data.clone(),
-                                            id: current_id.clone(),
-                                        };
-                                        // Update last event ID on the connection
-                                        if let Some(ref id) = current_id {
-                                            *last_event_id_clone.lock().unwrap() = Some(id.clone());
+            // Get last event ID for resumption
+            let last_id = {
+                let lock = last_event_id_clone.lock().unwrap();
+                lock.clone()
+            };
+
+            // Build request with optional Last-Event-ID header
+            let mut request_builder = reqwest::Client::new()
+                .get(&url_clone)
+                .header("Accept", "text/event-stream")
+                .header("Cache-Control", "no-cache")
+                .header("Connection", "keep-alive");
+
+            if let Some(ref id) = last_id {
+                request_builder = request_builder.header("Last-Event-ID", id);
+            }
+
+            let connect_result = request_builder.send().await;
+            let mut response = match connect_result {
+                Ok(resp) if resp.status().is_success() => resp,
+                Ok(resp) => {
+                    // Server returned error status, don't reconnect
+                    tracing::warn!("SSE connection failed with status: {}", resp.status());
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("SSE connect failed: {}", e);
+                    // Wait before reconnecting
+                    let retry = *retry_ms_clone.lock().unwrap();
+                    tokio::time::sleep(tokio::time::Duration::from_millis(retry)).await;
+                    continue;
+                }
+            };
+
+            let mut stream = response.bytes_stream();
+            let mut buffer = String::new();
+            let mut current_event = String::from("message");
+            let mut current_data = String::new();
+            let mut current_id: Option<String> = None;
+
+            loop {
+                if close_signal_clone.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                tokio::select! {
+                    chunk = stream.next() => {
+                        match chunk {
+                            Some(Ok(bytes)) => {
+                                buffer.push_str(&String::from_utf8_lossy(&bytes));
+                                while let Some(line_end) = buffer.find('\n') {
+                                    let line = buffer[..line_end].trim_end_matches('\r').to_string();
+                                    buffer = buffer[line_end + 1..].to_string();
+
+                                    if line.is_empty() {
+                                        if !current_data.is_empty() {
+                                            let event = SseEvent {
+                                                event: current_event.clone(),
+                                                data: current_data.clone(),
+                                                id: current_id.clone(),
+                                            };
+                                            // Update last event ID on the connection
+                                            if let Some(ref id) = current_id {
+                                                *last_event_id_clone.lock().unwrap() = Some(id.clone());
+                                            }
+                                            incoming_clone.lock().unwrap().push_back(event);
+                                            current_data.clear();
+                                            current_event = "message".to_string();
                                         }
-                                        incoming_clone.lock().unwrap().push_back(event);
-                                        current_data.clear();
-                                        current_event = "message".to_string();
-                                    }
-                                } else if line.starts_with(':') {
-                                    // Comment, ignore.
-                                } else if let Some(rest) = line.strip_prefix("event:") {
-                                    current_event = rest.trim().to_string();
-                                } else if let Some(rest) = line.strip_prefix("data:") {
-                                    if !current_data.is_empty() {
-                                        current_data.push('\n');
-                                    }
-                                    current_data.push_str(rest.trim_start());
-                                } else if let Some(rest) = line.strip_prefix("id:") {
-                                    current_id = Some(rest.trim().to_string());
-                                } else if let Some(rest) = line.strip_prefix("retry:") {
-                                    if let Ok(ms) = rest.trim().parse::<u64>() {
-                                        *retry_ms_clone.lock().unwrap() = ms;
+                                    } else if line.starts_with(':') {
+                                        // Comment, ignore.
+                                    } else if let Some(rest) = line.strip_prefix("event:") {
+                                        current_event = rest.trim().to_string();
+                                    } else if let Some(rest) = line.strip_prefix("data:") {
+                                        if !current_data.is_empty() {
+                                            current_data.push('\n');
+                                        }
+                                        current_data.push_str(rest.trim_start());
+                                    } else if let Some(rest) = line.strip_prefix("id:") {
+                                        current_id = Some(rest.trim().to_string());
+                                    } else if let Some(rest) = line.strip_prefix("retry:") {
+                                        if let Ok(ms) = rest.trim().parse::<u64>() {
+                                            *retry_ms_clone.lock().unwrap() = ms;
+                                        }
                                     }
                                 }
                             }
+                            Some(Err(_)) | None => {
+                                // Connection lost, break to reconnect
+                                break;
+                            }
                         }
-                        Some(Err(_)) | None => break,
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                        // Keep-alive check: if no data for a while, try to send a keepalive
+                        // This prevents connection timeout on some proxies
+                        if response.bytes().await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
+
+            // Connection lost or closed, update state
+            closed_clone.store(true, Ordering::SeqCst);
+
+            // Don't reconnect if explicitly closed
+            if close_signal_clone.load(Ordering::SeqCst) {
+                break;
+            }
+
+            // Wait before reconnecting
+            let retry = *retry_ms_clone.lock().unwrap();
+            if retry > 0 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(retry)).await;
+            }
+
+            // Reset for reconnection
+            closed_clone.store(false, Ordering::SeqCst);
         }
 
         closed_clone.store(true, Ordering::SeqCst);

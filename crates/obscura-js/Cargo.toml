@@ -16,7 +16,7 @@ stealth = ["obscura-net/stealth"]
 # rasterizes screenshots. Off by default so the scraping build stays lean.
 render = ["dep:obscura-render", "obscura-render/paint"]
 # WebSocket API: page-level WebSocket connections (servo parity).
-websocket = ["dep:tungstenite"]
+websocket = ["dep:tungstenite", "dep:tokio-tungstenite"]
 # Canvas 2D: richer path drawing API (servo-canvas parity).
 canvas2d = ["dep:kurbo"]
 # Media playback (servo-media parity).
@@ -70,6 +70,8 @@ obscura-render = { workspace = true, optional = true }
 obscura-render-gpu = { workspace = true, optional = true }
 # WebSocket client for page-level WebSocket API (servo parity).
 tungstenite = { workspace = true, optional = true }
+# Async WebSocket client for page-level WebSocket API (servo parity).
+tokio-tungstenite = { workspace = true, optional = true }
 # Canvas 2D path rendering (servo-canvas parity).
 kurbo = { workspace = true, optional = true }
 # Media playback (servo-media parity).

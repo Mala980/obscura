@@ -645,7 +645,7 @@ fn parse_font_feature_settings(value: &str) -> Option<Vec<crate::FontFeatureSett
     if parser.is_exhausted() {
         return None;
     }
-    let mut settings = Vec::new();
+    let mut settings: Vec<crate::FontFeatureSetting> = Vec::new();
     loop {
         let tag = parser.expect_string_cloned().ok()?;
         let bytes = tag.as_bytes();
@@ -2162,7 +2162,7 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
         "font-variant-numeric" => {
             let v = value.trim().to_ascii_lowercase();
             if v == "normal" || v == "initial" || v == "revert" || v == "revert-layer" {
-                style.font_variant_numeric = Some(crate::FontVariantNumeric::Normal);
+                style.font_variant_numeric = Some(crate::FontVariantNumeric::normal());
             } else if v == "inherit" || v == "unset" {
                 style.font_variant_numeric = None;
             } else if !v.is_empty() {

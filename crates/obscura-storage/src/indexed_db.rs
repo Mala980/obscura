@@ -197,14 +197,14 @@ impl IndexedDb {
         let mut stmt = conn.prepare(
             "SELECT id, key_path FROM store_indexes WHERE store_id = ?1",
         )?;
-        let indexes: Vec<(i64, String)> = stmt
-            .query_map(params![store_id], |row| {
+        let indexes: Vec<(i64, String)> = {
+            let rows = stmt.query_map(params![store_id], |row| {
                 let idx_id: i64 = row.get(0)?;
                 let kp: String = row.get(1)?;
                 Ok((idx_id, kp))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+            })?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
 
         for (index_id, key_path) in &indexes {
             // Remove old entry for this row.
@@ -255,9 +255,8 @@ impl IndexedDb {
                 let mut stmt = conn.prepare(
                     "SELECT id FROM store_data WHERE store_id = ?1 AND key_val = ?2",
                 )?;
-                stmt.query_map(params![store_id, k], |row| row.get(0))?
-                    .filter_map(|r| r.ok())
-                    .collect()
+                let rows = stmt.query_map(params![store_id, k], |row| row.get(0))?;
+                rows.filter_map(|r| r.ok()).collect()
             };
             self.remove_index_entries_for_store(&conn, store_id, &old_row_ids)?;
 
@@ -291,10 +290,11 @@ impl IndexedDb {
             "SELECT value FROM store_data WHERE store_id = ?1 AND key_val = ?2 LIMIT 1",
         )?;
         let mut rows = stmt.query(params![store_id, key])?;
-        match rows.next()? {
+        let result = match rows.next()? {
             Some(row) => Ok(Some(row.get(0)?)),
             None => Ok(None),
-        }
+        };
+        result
     }
 
     pub fn delete(&self, store_id: i64, key: &str) -> Result<bool> {
@@ -303,9 +303,8 @@ impl IndexedDb {
             let mut stmt = conn.prepare(
                 "SELECT id FROM store_data WHERE store_id = ?1 AND key_val = ?2",
             )?;
-            stmt.query_map(params![store_id, key], |row| row.get(0))?
-                .filter_map(|r| r.ok())
-                .collect()
+            let rows = stmt.query_map(params![store_id, key], |row| row.get(0))?;
+            rows.filter_map(|r| r.ok()).collect()
         };
         if row_ids.is_empty() {
             return Ok(false);
@@ -323,9 +322,8 @@ impl IndexedDb {
         // Collect all row ids before deleting for index cleanup.
         let row_ids: Vec<i64> = {
             let mut stmt = conn.prepare("SELECT id FROM store_data WHERE store_id = ?1")?;
-            stmt.query_map([store_id], |row| row.get(0))?
-                .filter_map(|r| r.ok())
-                .collect()
+            let rows = stmt.query_map([store_id], |row| row.get(0))?;
+            rows.filter_map(|r| r.ok()).collect()
         };
         self.remove_index_entries_for_store(&conn, store_id, &row_ids)?;
         conn.execute(
@@ -349,11 +347,14 @@ impl IndexedDb {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut stmt =
             conn.prepare("SELECT key_val FROM store_data WHERE store_id = ?1 AND key_val IS NOT NULL")?;
-        let rows = stmt.query_map([store_id], |row| row.get(0))?;
-        let mut keys = Vec::new();
-        for row in rows {
-            keys.push(row?);
-        }
+        let keys = {
+            let rows = stmt.query_map([store_id], |row| row.get(0))?;
+            let mut keys = Vec::new();
+            for row in rows {
+                keys.push(row?);
+            }
+            keys
+        };
         Ok(keys)
     }
 
@@ -440,9 +441,8 @@ impl IndexedDb {
                             let mut stmt = tx.prepare(
                                 "SELECT id FROM store_data WHERE store_id = ?1 AND key_val = ?2",
                             )?;
-                            stmt.query_map(params![store_id, k], |row| row.get(0))?
-                                .filter_map(|r| r.ok())
-                                .collect()
+                            let rows = stmt.query_map(params![store_id, k], |row| row.get(0))?;
+                            rows.filter_map(|r| r.ok()).collect()
                         };
                         self.remove_index_entries_for_store(&tx, *store_id, &old_row_ids)?;
 
@@ -471,9 +471,8 @@ impl IndexedDb {
                         let mut stmt = tx.prepare(
                             "SELECT id FROM store_data WHERE store_id = ?1 AND key_val = ?2",
                         )?;
-                        stmt.query_map(params![store_id, key], |row| row.get(0))?
-                            .filter_map(|r| r.ok())
-                            .collect()
+                        let rows = stmt.query_map(params![store_id, key], |row| row.get(0))?;
+                        rows.filter_map(|r| r.ok()).collect()
                     };
                     self.remove_index_entries_for_store(&tx, *store_id, &row_ids)?;
                     tx.execute(
@@ -486,9 +485,8 @@ impl IndexedDb {
                         let mut stmt = tx.prepare(
                             "SELECT id FROM store_data WHERE store_id = ?1",
                         )?;
-                        stmt.query_map([*store_id], |row| row.get(0))?
-                            .filter_map(|r| r.ok())
-                            .collect()
+                        let rows = stmt.query_map([*store_id], |row| row.get(0))?;
+                        rows.filter_map(|r| r.ok()).collect()
                     };
                     self.remove_index_entries_for_store(&tx, *store_id, &row_ids)?;
                     tx.execute(
@@ -582,9 +580,8 @@ impl IndexedDb {
             let mut stmt = conn.prepare(
                 "SELECT id FROM store_data WHERE store_id = ?1 ORDER BY id",
             )?;
-            stmt.query_map([store_id], |row| row.get(0))?
-                .filter_map(|r| r.ok())
-                .collect()
+            let rows = stmt.query_map([store_id], |row| row.get(0))?;
+            rows.filter_map(|r| r.ok()).collect()
         };
         if position >= row_ids.len() {
             return Err(anyhow::anyhow!("cursor past end"));
@@ -611,15 +608,18 @@ impl IndexedDb {
         let mut stmt = conn.prepare(
             "SELECT key_val, value FROM store_data WHERE store_id = ?1 ORDER BY id",
         )?;
-        let rows = stmt.query_map([store_id], |row| {
-            let key: Option<String> = row.get(0)?;
-            let value: String = row.get(1)?;
-            Ok((key.unwrap_or_default(), value))
-        })?;
-        let mut pairs = Vec::new();
-        for row in rows {
-            pairs.push(row?);
-        }
+        let pairs = {
+            let rows = stmt.query_map([store_id], |row| {
+                let key: Option<String> = row.get(0)?;
+                let value: String = row.get(1)?;
+                Ok((key.unwrap_or_default(), value))
+            })?;
+            let mut pairs = Vec::new();
+            for row in rows {
+                pairs.push(row?);
+            }
+            pairs
+        };
         Ok(pairs)
     }
 
@@ -660,13 +660,15 @@ impl IndexedDb {
         let mut stmt = conn.prepare(
             "SELECT id, value FROM store_data WHERE store_id = ?1",
         )?;
-        let rows = stmt.query_map([store_id], |row| {
-            let row_id: i64 = row.get(0)?;
-            let value: String = row.get(1)?;
-            Ok((row_id, value))
-        })?;
-        for row in rows {
-            let (row_id, value) = row?;
+        let rows: Vec<(i64, String)> = {
+            let rows = stmt.query_map([store_id], |row| {
+                let row_id: i64 = row.get(0)?;
+                let value: String = row.get(1)?;
+                Ok((row_id, value))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (row_id, value) in rows {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&value) {
                 let index_key = match parsed.get(key_path) {
                     Some(serde_json::Value::String(s)) => s.clone(),
@@ -706,10 +708,11 @@ impl IndexedDb {
              LIMIT 1",
         )?;
         let mut rows = stmt.query(params![index_id, key])?;
-        match rows.next()? {
+        let result = match rows.next()? {
             Some(row) => Ok(Some(row.get(0)?)),
             None => Ok(None),
-        }
+        };
+        result
     }
 
     /// Get all values where the indexed key matches `key`.
@@ -731,15 +734,18 @@ impl IndexedDb {
              JOIN store_data sd ON sd.id = sid.store_row_id
              WHERE sid.index_id = ?1 AND sid.index_key = ?2",
         )?;
-        let rows = stmt.query_map(params![index_id, key], |row| {
-            let k: Option<String> = row.get(0)?;
-            let v: String = row.get(1)?;
-            Ok((k.unwrap_or_default(), v))
-        })?;
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
+        let results = {
+            let rows = stmt.query_map(params![index_id, key], |row| {
+                let k: Option<String> = row.get(0)?;
+                let v: String = row.get(1)?;
+                Ok((k.unwrap_or_default(), v))
+            })?;
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row?);
+            }
+            results
+        };
         Ok(results)
     }
 
@@ -764,11 +770,14 @@ impl IndexedDb {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT index_key FROM store_index_data WHERE index_id = ?1 ORDER BY index_key",
         )?;
-        let rows = stmt.query_map(params![index_id], |row| row.get(0))?;
-        let mut keys = Vec::new();
-        for row in rows {
-            keys.push(row?);
-        }
+        let keys = {
+            let rows = stmt.query_map(params![index_id], |row| row.get(0))?;
+            let mut keys = Vec::new();
+            for row in rows {
+                keys.push(row?);
+            }
+            keys
+        };
         Ok(keys)
     }
 
