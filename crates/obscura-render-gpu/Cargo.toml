@@ -25,6 +25,6 @@ webrender-api = { version = "0.70", optional = true }
 # Surfman (GPU surface management)
 surfman = { version = "0.9", optional = true }
 # Euclid (geometry primitives for WebRender)
-euclid = { version = "0.23", optional = true }
+euclid = { version = "0.22", optional = true }
 # Image for texture loading
 image = { version = "0.25", optional = true }
