@@ -146,8 +146,8 @@ enum Command {
         #[arg(long)]
         user_agent: Option<String>,
 
-        #[arg(long, short)]
-        eval: Option<String>,
+        #[arg(long, short, num_args = 0..)]
+        eval: Vec<String>,
 
         #[arg(long, short = 'o')]
         output: Option<std::path::PathBuf>,
@@ -166,8 +166,8 @@ enum Command {
     Scrape {
         urls: Vec<String>,
 
-        #[arg(long, short)]
-        eval: Option<String>,
+        #[arg(long, short, num_args = 0..)]
+        eval: Vec<String>,
 
         #[arg(long, default_value_t = std::num::NonZeroUsize::new(10).unwrap())]
         concurrency: std::num::NonZeroUsize,
@@ -767,8 +767,9 @@ async fn run_fetch(
     // immediately before screenshot paint. Ordinary CLI evaluation retains
     // its existing evaluate-then-settle behavior when this private variable is
     // absent.
+    let eval_str = if eval.is_empty() { None } else { Some(eval.join(" ")) };
     let eval_at_capture_boundary = screenshot.is_some()
-        && eval.is_some()
+        && eval_str.is_some()
         && std::env::var("OBSCURA_SHOT_EVAL_AT_CAPTURE").is_ok_and(|value| value == "1");
     let controlled_scroll_request = screenshot.as_ref().and_then(|_| {
         let raw_y = std::env::var("OBSCURA_SHOT_SCROLL_Y").ok()?;
@@ -798,7 +799,7 @@ async fn run_fetch(
     {
         let settle_passes = if eval_at_capture_boundary {
             1 + u64::from(controlled_scroll_request.is_some())
-        } else if eval.is_some() && (screenshot.is_some() || selector.is_some() || dump_specified) {
+        } else if eval_str.is_some() && (screenshot.is_some() || selector.is_some() || dump_specified) {
             2
         } else {
             1
@@ -868,7 +869,7 @@ async fn run_fetch(
     }
 
     if !eval_at_capture_boundary {
-        if let Some(ref expr) = eval {
+                if let Some(ref expr) = eval_str {
             // Bound the eval by the same budget as navigation so a runaway
             // expression (infinite loop, never-settling sync work) cannot hang.
             let result = page.evaluate_with_timeout(expr, Duration::from_secs(timeout_secs));
@@ -993,7 +994,7 @@ async fn run_fetch(
                     ))
                 });
             if eval_at_capture_boundary {
-                if let Some(ref expr) = eval {
+        if let Some(ref expr) = eval_str {
                     deferred_eval_output =
                         Some(page.evaluate_with_timeout(expr, Duration::from_secs(timeout_secs)));
                 }
@@ -1516,7 +1517,7 @@ fn extract_readable_text(dom: &obscura_dom::DomTree, node_id: obscura_dom::NodeI
 
 async fn run_parallel_scrape(
     urls: Vec<String>,
-    eval: Option<String>,
+    eval: Vec<String>,
     concurrency: usize,
     format: &str,
     timeout_secs: u64,
@@ -1557,7 +1558,7 @@ async fn run_parallel_scrape(
     }
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let eval = Arc::new(eval);
+    let eval = Arc::new(if eval.is_empty() { None } else { Some(eval.join(" ")) });
     let worker_path = Arc::new(worker_path);
     let worker_timeout = Duration::from_secs(timeout_secs);
     let read_timeout = Duration::from_secs(timeout_secs.min(30));
@@ -2396,7 +2397,7 @@ mod tests {
             timeout: 30,
             wait_until: "load".to_string(),
             user_agent: None,
-            eval: None,
+            eval: Vec::new(),
             quiet: true,
             output: None,
             storage_dir: None,
