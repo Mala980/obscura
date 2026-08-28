@@ -5307,11 +5307,10 @@ fn op_idb_get_all_keys(state: &OpState, db_handle: u32, #[bigint] store_id: i64)
 #[op2]
 #[serde]
 fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::Value {
-    use tungstenite::connect;
     use tungstenite::Message;
 
-    match connect(&url) {
-        Ok((_response, mut ws)) => {
+    match tungstenite::connect(&url) {
+        Ok((_resp, ws_socket)) => {
             let handle = {
                 let shared = state.borrow::<SharedState>().clone();
                 let mut gs = shared.borrow_mut();
@@ -5320,38 +5319,37 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                 h
             };
 
-            let incoming = Arc::new(std::sync::Mutex::new(VecDeque::new()));
+            let incoming: Arc<std::sync::Mutex<VecDeque<String>>> =
+                Arc::new(std::sync::Mutex::new(VecDeque::new()));
             let closed = Arc::new(AtomicBool::new(false));
-            let (write_tx, write_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
             let incoming_clone = incoming.clone();
             let closed_clone = closed.clone();
+            let closed_clone2 = closed.clone();
 
-            // Set a read timeout on the underlying TcpStream so we don't block
-            // forever when no messages arrive; this lets us drain outgoing messages
-            // periodically even when the server is silent.
-            {
-                let inner = ws.get_mut();
-                if let tungstenite::MaybeTlsStream::Plain(ref tcp) = *inner {
-                    let _ = tcp.set_read_timeout(Some(std::time::Duration::from_millis(100)));
-                }
-            }
+            // Wrap the WebSocket in a Mutex for thread-safe access
+            let ws = std::sync::Arc::new(std::sync::Mutex::new(ws_socket));
 
-            // Single I/O thread: owns the WebSocket and handles both reads and
-            // writes. tungstenite's synchronous WebSocket does not support split(),
-            // so we alternate between draining the outgoing channel and reading.
+            // Single I/O thread: owns the WebSocket and handles both reads and writes.
             std::thread::spawn(move || {
                 loop {
                     // Drain all pending outgoing messages (non-blocking)
                     while let Ok(msg) = write_rx.try_recv() {
-                        if ws.write_message(Message::Text(msg.into())).is_err() {
+                        let Ok(mut wh) = ws.lock() else { break };
+                        if wh.write_message(Message::Text(msg.into())).is_err() {
                             closed_clone.store(true, Ordering::SeqCst);
                             return;
                         }
                     }
 
-                    // Read next incoming message (blocks up to read timeout)
-                    match ws.read_message() {
+                    // Read next incoming message
+                    let read_result = {
+                        let Ok(mut wh) = ws.lock() else { break };
+                        wh.read_message()
+                    };
+
+                    match read_result {
                         Ok(Message::Text(text)) => {
                             incoming_clone.lock().unwrap().push_back(text.to_string());
                         }
@@ -5361,19 +5359,22 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                             }
                         }
                         Ok(Message::Close(_)) => break,
+                        Ok(_) => {}
                         Err(tungstenite::Error::Io(ref e))
                             if e.kind() == std::io::ErrorKind::TimedOut
                                 || e.kind() == std::io::ErrorKind::WouldBlock =>
                         {
-                            // Read timeout or no data available; loop back to
-                            // drain any outgoing messages that arrived meanwhile.
+                            // Read timeout; loop back to drain outgoing messages
+                            std::thread::sleep(std::time::Duration::from_millis(5));
                         }
                         Err(_) => break,
-                        _ => {}
                     }
                 }
-                let _ = ws.write_message(Message::Close(None));
-                closed_clone.store(true, Ordering::SeqCst);
+                // Send close frame
+                if let Ok(mut wh) = ws.lock() {
+                    let _ = wh.write_message(Message::Close(None));
+                }
+                closed_clone2.store(true, Ordering::SeqCst);
             });
 
             // Store the connection handle in page state.
