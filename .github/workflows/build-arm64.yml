@@ -127,8 +127,6 @@ jobs:
           echo "  Title: $TITLE"
           LINKS=$("$BIN" fetch --dump links https://terabox.com 2>/dev/null | grep -c "terabox.com" || true)
           echo "  Links found: $LINKS"
-          JS_RESULT=$("$BIN" fetch -e 'document.querySelectorAll("a").length' https://terabox.com 2>/dev/null | tail -1)
-          echo "  Anchor tags: $JS_RESULT"
           FAIL=0
           echo "$TITLE" | grep -qi "terabox\|cloud" || { echo "FAIL: unexpected title"; FAIL=1; }
           [ "$LINKS" -gt 0 ] || { echo "FAIL: no links found"; FAIL=1; }
@@ -141,10 +139,6 @@ jobs:
           echo "=== Voratoon Test ==="
           TITLE=$("$BIN" fetch -e 'document.title' https://v1.voratoon.com 2>/dev/null | tail -1)
           echo "  Title: $TITLE"
-          VIDEOS=$("$BIN" fetch -e 'document.querySelectorAll("video").length' https://v1.voratoon.com 2>/dev/null | tail -1)
-          echo "  Video elements: $VIDEOS"
-          IMGS=$("$BIN" fetch -e 'document.querySelectorAll("img").length' https://v1.voratoon.com 2>/dev/null | tail -1)
-          echo "  Image elements: $IMGS"
           FAIL=0
           [ -n "$TITLE" ] || { echo "FAIL: empty title"; FAIL=1; }
           if [ $FAIL -eq 0 ]; then echo "Voratoon test PASSED"; else echo "FAILED"; exit 1; fi
@@ -156,10 +150,6 @@ jobs:
           echo "=== YouTube Test ==="
           TITLE=$("$BIN" fetch -e 'document.title' https://youtube.com 2>/dev/null | tail -1)
           echo "  Title: $TITLE"
-          VIDEOS=$("$BIN" fetch -e 'document.querySelectorAll("video").length' https://youtube.com 2>/dev/null | tail -1)
-          echo "  Video elements: $VIDEOS"
-          JS_API=$("$BIN" fetch -e 'document.querySelectorAll("script").length' https://youtube.com 2>/dev/null | tail -1)
-          echo "  Script tags: $JS_API"
           FAIL=0
           echo "$TITLE" | grep -qi "youtube" || { echo "FAIL: unexpected title"; FAIL=1; }
           if [ $FAIL -eq 0 ]; then echo "YouTube test PASSED"; else echo "FAILED"; exit 1; fi
@@ -169,14 +159,6 @@ jobs:
         run: |
           BIN=target/aarch64-unknown-linux-gnu/release/obscura
           echo "=== Video Element Test ==="
-          CAN_PLAY_MP4=$("$BIN" fetch -e 'document.createElement("video").canPlayType("video/mp4")' https://youtube.com 2>/dev/null | tail -1)
-          CAN_PLAY_WEBM=$("$BIN" fetch -e 'document.createElement("video").canPlayType("video/webm")' https://youtube.com 2>/dev/null | tail -1)
-          CAN_PLAY_OGG=$("$BIN" fetch -e 'document.createElement("video").canPlayType("video/ogg")' https://youtube.com 2>/dev/null | tail -1)
-          CAN_PLAY_MPEG=$("$BIN" fetch -e 'document.createElement("audio").canPlayType("audio/mpeg")' https://youtube.com 2>/dev/null | tail -1)
-          echo "  video/mp4: '$CAN_PLAY_MP4'"
-          echo "  video/webm: '$CAN_PLAY_WEBM'"
-          echo "  video/ogg: '$CAN_PLAY_OGG'"
-          echo "  audio/mpeg: '$CAN_PLAY_MPEG'"
           VIDEO_ELEMENT=$("$BIN" fetch -e 'typeof HTMLVideoElement' https://youtube.com 2>/dev/null | tail -1)
           AUDIO_ELEMENT=$("$BIN" fetch -e 'typeof HTMLAudioElement' https://youtube.com 2>/dev/null | tail -1)
           MEDIA_SRC=$("$BIN" fetch -e 'typeof MediaSource' https://youtube.com 2>/dev/null | tail -1)
