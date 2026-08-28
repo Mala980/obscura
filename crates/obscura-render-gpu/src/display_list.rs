@@ -161,6 +161,24 @@ impl DisplayListBuilder {
                     cx += char_w;
                 }
             }
+            DisplayItem::Image {
+                x,
+                y,
+                width,
+                height,
+                data,
+            } => {
+                // Images are flattened as solid-color placeholder quads.
+                // A real implementation would upload `data` as a GL texture.
+                let _ = data;
+                quads.push(GpuQuad {
+                    x: *x,
+                    y: *y,
+                    width: *width,
+                    height: *height,
+                    color: [255, 255, 255, (255.0 * parent_opacity) as u8],
+                });
+            }
             DisplayItem::Clip {
                 x,
                 y,
