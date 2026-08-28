@@ -75,4 +75,4 @@ obscura-media = { workspace = true, optional = true }
 glow = { version = "0.16", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-egl = { version = "2.1", optional = true }
+egl = { version = "0.2", optional = true }
