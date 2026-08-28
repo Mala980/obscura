@@ -5387,7 +5387,7 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                             WsMessage::Close { code, ref reason } => {
                                 let frame = tungstenite::protocol::CloseFrame {
                                     code: tungstenite::protocol::frame::coding::CloseCode::from(code.unwrap_or(1000)),
-                                    reason: std::borrow::Cow::Owned(reason.clone()),
+                                    reason: reason.clone().into(),
                                 };
                                 wh.write_message(Message::Close(Some(frame)))
                             }
@@ -5756,11 +5756,9 @@ async fn op_eventsource_connect(
                         }
                     }
                     _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
-                        // Keep-alive check: if no data for a while, try to send a keepalive
-                        // This prevents connection timeout on some proxies
-                        if response.bytes().await.is_err() {
-                            break;
-                        }
+                        // Keep-alive: no data received for 100ms. The stream
+                        // itself remains alive; we only need to keep polling
+                        // for the next chunk or close signal.
                     }
                 }
             }
