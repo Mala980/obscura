@@ -6184,6 +6184,38 @@ fn flush_at_rule(
                 Some(layer),
             ),
         );
+    } else if let Some(_prelude) = at_rule_prelude(at, "scope") {
+        // CSS Cascading and Inheritance 6: @scope is a conditional group rule.
+        // Like @media and @supports, it gates its inner rules on a condition.
+        // We don't currently evaluate scope selectors, so treat it as always
+        // matching (conservative: includes the rules rather than dropping them).
+        rules.extend(
+            parse_stylesheet_for_viewport_preserving_containers_in_layer(
+                inner,
+                viewport,
+                media_type,
+                container_conditions,
+                container_condition_id,
+                layers,
+                current_layer.cloned(),
+            ),
+        );
+    } else if let Some(_prelude) = at_rule_prelude(at, "starting-style") {
+        // CSS Transitions Level 2: @starting-style contains rules that apply
+        // only during the element's initial style. We conservatively include
+        // these rules at all times (same as other browsers when not yet
+        // implementing the transition protocol).
+        rules.extend(
+            parse_stylesheet_for_viewport_preserving_containers_in_layer(
+                inner,
+                viewport,
+                media_type,
+                container_conditions,
+                container_condition_id,
+                layers,
+                current_layer.cloned(),
+            ),
+        );
     }
     // Other at-rules (@font-face, @import, ...) carry no
     // layout-relevant rules for us, so drop them.

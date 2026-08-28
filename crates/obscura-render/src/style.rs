@@ -639,6 +639,48 @@ pub(crate) fn recompute_overflow(style: &mut LayoutStyle) {
     style.overflow_scroll_container = style.overflow_scroll_x || style.overflow_scroll_y;
 }
 
+fn parse_font_feature_settings(value: &str) -> Option<Vec<crate::FontFeatureSetting>> {
+    let mut input = cssparser::ParserInput::new(value.trim());
+    let mut parser = cssparser::Parser::new(&mut input);
+    if parser.is_exhausted() {
+        return None;
+    }
+    let mut settings = Vec::new();
+    loop {
+        let tag = parser.expect_string_cloned().ok()?;
+        let bytes = tag.as_bytes();
+        if bytes.len() != 4 || !bytes.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+            return None;
+        }
+        let tag = [bytes[0], bytes[1], bytes[2], bytes[3]];
+        // Optional numeric value after the tag name. If it's not a number,
+        // treat as enable (true).
+        let value = if let Ok(num) = parser.try_parse(|p| p.expect_integer()) {
+            if num < 0 {
+                crate::FontFeatureValue::Number(0)
+            } else {
+                crate::FontFeatureValue::Number(num as u32)
+            }
+        } else {
+            crate::FontFeatureValue::Bool(true)
+        };
+        // Deduplicate: last occurrence wins
+        if let Some(existing) = settings.iter_mut().find(|s| s.tag == tag) {
+            *existing = crate::FontFeatureSetting { tag, value };
+        } else {
+            settings.push(crate::FontFeatureSetting { tag, value });
+        }
+        if parser.is_exhausted() {
+            break;
+        }
+        parser.expect_comma().ok()?;
+        if parser.is_exhausted() {
+            return None;
+        }
+    }
+    Some(settings)
+}
+
 fn parse_font_variation_settings(value: &str) -> Option<Vec<crate::FontVariationSetting>> {
     let mut input = cssparser::ParserInput::new(value.trim());
     let mut parser = cssparser::Parser::new(&mut input);
@@ -1784,6 +1826,53 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
             let none = toks.iter().any(|t| t == "none");
             style.underline = Some(underline && !none);
         }
+        "text-decoration-thickness" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "auto" || v == "from-font" {
+                style.text_decoration_thickness = None;
+            } else if let Some(px) = px_value(value).filter(|p| *p >= 0.0) {
+                style.text_decoration_thickness = Some(px);
+            }
+        }
+        "text-underline-offset" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "auto" || v == "from-font" {
+                style.text_underline_offset = None;
+            } else if let Some(px) = px_value(value) {
+                style.text_underline_offset = Some(px);
+            }
+        }
+        "text-emphasis" => {
+            let toks: Vec<String> = value
+                .split_whitespace()
+                .map(|t| t.to_ascii_lowercase())
+                .collect();
+            let has_style = toks.iter().any(|t| {
+                matches!(
+                    t.as_str(),
+                    "filled" | "open" | "dot" | "circle" | "double-circle"
+                    | "triangle" | "sesame" | "none"
+                )
+            });
+            if has_style {
+                style.text_emphasis = Some(value.trim().to_string());
+            } else if toks.iter().any(|t| t == "none") {
+                style.text_emphasis = Some("none".to_string());
+            }
+        }
+        "hanging-punctuation" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "none" || v == "inherit" || v == "unset" || v == "revert" || v == "revert-layer" {
+                style.hanging_punctuation = None;
+            } else if !v.is_empty() {
+                style.hanging_punctuation = Some(value.trim().to_string());
+            }
+        }
+        "line-clamp" => {
+            if let Some(lines) = webkit_line_clamp_value(value) {
+                style.webkit_line_clamp = lines;
+            }
+        }
         "gap" | "grid-gap" => {
             let values = split_ws_paren(value);
             if let Some(row) = values.first() {
@@ -1837,7 +1926,249 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
                 style.table_layout_fixed = false;
             }
             _ => {}
-        },
+        }
+        "caption-side" => {
+            let v = value.trim().to_ascii_lowercase();
+            style.caption_side = match v.as_str() {
+                "top" | "top-outside" => Some(crate::CaptionSide::Top),
+                "bottom" | "bottom-outside" => Some(crate::CaptionSide::Bottom),
+                "block-start" => Some(crate::CaptionSide::Top),
+                "block-end" => Some(crate::CaptionSide::Bottom),
+                "inherit" | "unset" => None,
+                _ => style.caption_side,
+            };
+        }
+        "resize" => {
+            style.resize = match value.trim().to_ascii_lowercase().as_str() {
+                "none" => Some(crate::Resize::None),
+                "both" | "initial" | "revert" | "revert-layer" => Some(crate::Resize::Both),
+                "horizontal" | "inline" => Some(crate::Resize::Horizontal),
+                "vertical" | "block" => Some(crate::Resize::Vertical),
+                "inherit" | "unset" => None,
+                _ => style.resize,
+            };
+        }
+        "overscroll-behavior" => {
+            let toks: Vec<&str> = value.split_whitespace().collect();
+            match toks.as_slice() {
+                [single] => {
+                    let v = single.to_ascii_lowercase();
+                    match v.as_str() {
+                        "none" => {
+                            style.overscroll_behavior_x = Some(crate::OverscrollBehavior::None);
+                            style.overscroll_behavior_y = Some(crate::OverscrollBehavior::None);
+                        }
+                        "contain" | "initial" | "revert" | "revert-layer" => {
+                            style.overscroll_behavior_x = Some(crate::OverscrollBehavior::Contain);
+                            style.overscroll_behavior_y = Some(crate::OverscrollBehavior::Contain);
+                        }
+                        "inherit" | "unset" => {
+                            style.overscroll_behavior_x = None;
+                            style.overscroll_behavior_y = None;
+                        }
+                        _ => {}
+                    }
+                }
+                [first, second] => {
+                    let parse_axis = |val: &str| -> Option<crate::OverscrollBehavior> {
+                        match val.to_ascii_lowercase().as_str() {
+                            "none" => Some(crate::OverscrollBehavior::None),
+                            "contain" => Some(crate::OverscrollBehavior::Contain),
+                            _ => None,
+                        }
+                    };
+                    // overscroll-behavior: overscroll-behavior-x || overscroll-behavior-y
+                    if let Some(x) = parse_axis(first) {
+                        style.overscroll_behavior_x = Some(x);
+                    }
+                    if let Some(y) = parse_axis(second) {
+                        style.overscroll_behavior_y = Some(y);
+                    }
+                }
+                _ => {}
+            }
+        }
+        "overscroll-behavior-x" => {
+            style.overscroll_behavior_x = match value.trim().to_ascii_lowercase().as_str() {
+                "none" => Some(crate::OverscrollBehavior::None),
+                "contain" | "initial" | "revert" | "revert-layer" => {
+                    Some(crate::OverscrollBehavior::Contain)
+                }
+                "inherit" | "unset" => None,
+                _ => style.overscroll_behavior_x,
+            };
+        }
+        "overscroll-behavior-y" => {
+            style.overscroll_behavior_y = match value.trim().to_ascii_lowercase().as_str() {
+                "none" => Some(crate::OverscrollBehavior::None),
+                "contain" | "initial" | "revert" | "revert-layer" => {
+                    Some(crate::OverscrollBehavior::Contain)
+                }
+                "inherit" | "unset" => None,
+                _ => style.overscroll_behavior_y,
+            };
+        }
+        "scrollbar-width" => {
+            style.scrollbar_width = match value.trim().to_ascii_lowercase().as_str() {
+                "auto" | "initial" | "revert" | "revert-layer" => {
+                    Some(crate::ScrollbarWidth::Auto)
+                }
+                "thin" => Some(crate::ScrollbarWidth::Thin),
+                "none" => Some(crate::ScrollbarWidth::None),
+                "inherit" | "unset" => None,
+                _ => style.scrollbar_width,
+            };
+        }
+        "scrollbar-color" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "auto" || v == "initial" || v == "revert" || v == "revert-layer" {
+                style.scrollbar_color = None;
+            } else if v == "inherit" || v == "unset" {
+                style.scrollbar_color = None;
+            } else if !v.is_empty() && v != "none" {
+                let tokens: Vec<&str> = v.split_whitespace().collect();
+                if tokens.len() == 2 {
+                    let thumb = parse_color_for_scheme(tokens[0], style.color_scheme_dark);
+                    let track = parse_color_for_scheme(tokens[1], style.color_scheme_dark);
+                    style.scrollbar_color = Some((thumb, track));
+                }
+            }
+        }
+        "mix-blend-mode" => {
+            style.mix_blend_mode = match value.trim().to_ascii_lowercase().as_str() {
+                "normal" | "initial" | "revert" | "revert-layer" => {
+                    Some(crate::BlendMode::Normal)
+                }
+                "multiply" => Some(crate::BlendMode::Multiply),
+                "screen" => Some(crate::BlendMode::Screen),
+                "overlay" => Some(crate::BlendMode::Overlay),
+                "darken" => Some(crate::BlendMode::Darken),
+                "lighten" => Some(crate::BlendMode::Lighten),
+                "color-dodge" => Some(crate::BlendMode::ColorDodge),
+                "color-burn" => Some(crate::BlendMode::ColorBurn),
+                "hard-light" => Some(crate::BlendMode::HardLight),
+                "soft-light" => Some(crate::BlendMode::SoftLight),
+                "difference" => Some(crate::BlendMode::Difference),
+                "exclusion" => Some(crate::BlendMode::Exclusion),
+                "hue" => Some(crate::BlendMode::Hue),
+                "saturation" => Some(crate::BlendMode::Saturation),
+                "color" => Some(crate::BlendMode::Color),
+                "luminosity" => Some(crate::BlendMode::Luminosity),
+                "plus-darker" => Some(crate::BlendMode::PlusDarker),
+                "plus-lighter" => Some(crate::BlendMode::PlusLighter),
+                "inherit" | "unset" => None,
+                _ => style.mix_blend_mode,
+            };
+        }
+        "background-blend-mode" => {
+            let modes: Vec<crate::BlendMode> = value
+                .split_whitespace()
+                .map(|tok| match tok.to_ascii_lowercase().as_str() {
+                    "multiply" => crate::BlendMode::Multiply,
+                    "screen" => crate::BlendMode::Screen,
+                    "overlay" => crate::BlendMode::Overlay,
+                    "darken" => crate::BlendMode::Darken,
+                    "lighten" => crate::BlendMode::Lighten,
+                    "color-dodge" => crate::BlendMode::ColorDodge,
+                    "color-burn" => crate::BlendMode::ColorBurn,
+                    "hard-light" => crate::BlendMode::HardLight,
+                    "soft-light" => crate::BlendMode::SoftLight,
+                    "difference" => crate::BlendMode::Difference,
+                    "exclusion" => crate::BlendMode::Exclusion,
+                    "hue" => crate::BlendMode::Hue,
+                    "saturation" => crate::BlendMode::Saturation,
+                    "color" => crate::BlendMode::Color,
+                    "luminosity" => crate::BlendMode::Luminosity,
+                    "plus-darker" => crate::BlendMode::PlusDarker,
+                    "plus-lighter" => crate::BlendMode::PlusLighter,
+                    _ => crate::BlendMode::Normal,
+                })
+                .collect();
+            if !modes.is_empty() {
+                style.background_blend_mode = modes;
+            }
+        }
+        "shape-outside" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "none" || v == "initial" || v == "unset" || v == "revert" || v == "revert-layer" {
+                style.shape_outside = None;
+            } else if v == "inherit" {
+                style.shape_outside = None;
+            } else if v.starts_with("polygon(") {
+                if let Some(polygon) = parse_clip_path_polygon(value) {
+                    style.shape_outside = Some(crate::ShapeOutside::Polygon(polygon));
+                }
+            } else if v.starts_with("circle(") || v.starts_with("ellipse(") || v.starts_with("inset(") {
+                style.shape_outside = Some(crate::ShapeOutside::BasicShape(value.trim().to_string()));
+            } else if v.starts_with("url(") {
+                style.shape_outside = Some(crate::ShapeOutside::Image(value.trim().to_string()));
+            } else if v == "content-box" || v == "margin-box" || v == "border-box" || v == "padding-box" {
+                style.shape_outside = Some(crate::ShapeOutside::ReferenceBox(v));
+            }
+        }
+        "shape-image-threshold" => {
+            if let Some(v) = value.trim().parse::<f32>().ok().filter(|v| v.is_finite()) {
+                style.shape_image_threshold = Some(v.clamp(0.0, 1.0));
+            }
+        }
+        "shape-margin" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "none" || v == "initial" || v == "unset" || v == "revert" || v == "revert-layer" {
+                style.shape_margin = None;
+            } else if v == "inherit" {
+                style.shape_margin = None;
+            } else if let Some(px) = px_value(value) {
+                style.shape_margin = Some(px);
+            } else {
+                let dim = dimension_value(value);
+                if !matches!(dim, crate::Dimension::Auto) {
+                    style.shape_margin = Some(0.0);
+                    style.shape_margin_raw = Some(Some(dim));
+                }
+            }
+        }
+        "animation-timeline" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "auto" || v == "initial" || v == "revert" || v == "revert-layer" || v == "none" {
+                style.animation_timeline = None;
+            } else if v.starts_with("scroll(") {
+                style.animation_timeline = Some(crate::AnimationTimeline::Scroll(value.trim().to_string()));
+            } else if v.starts_with("view(") {
+                style.animation_timeline = Some(crate::AnimationTimeline::View(value.trim().to_string()));
+            } else if v.starts_with("--") {
+                style.animation_timeline = Some(crate::AnimationTimeline::Custom(value.trim().to_string()));
+            }
+        }
+        "animation-range" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "normal" || v == "initial" || v == "revert" || v == "revert-layer" {
+                style.animation_range = None;
+            } else if v == "inherit" || v == "unset" {
+                style.animation_range = None;
+            } else if !v.is_empty() {
+                style.animation_range = Some(value.trim().to_string());
+            }
+        }
+        "font-feature-settings" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "normal" || v == "initial" {
+                style.font_feature_settings = Some(Vec::new());
+            } else if v == "inherit" || v == "unset" || v == "revert" || v == "revert-layer" {
+                style.font_feature_settings = None;
+            } else if let Some(settings) = parse_font_feature_settings(value) {
+                style.font_feature_settings = Some(settings);
+            }
+        }
+        "font-variant-numeric" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "normal" || v == "initial" || v == "revert" || v == "revert-layer" {
+                style.font_variant_numeric = Some(crate::FontVariantNumeric::Normal);
+            } else if v == "inherit" || v == "unset" {
+                style.font_variant_numeric = None;
+            } else if !v.is_empty() {
+                style.font_variant_numeric = Some(crate::FontVariantNumeric::parse(value));
+            }
+        }
         "grid-template-columns" => {
             let (tracks, names, calc_expressions) = parse_track_list_named(value);
             style.grid_template_columns_subgrid = is_subgrid_track_list(value);
@@ -2185,15 +2516,22 @@ pub fn supports_declaration(name: &str, value: &str) -> bool {
             | "font-style"
             | "font-optical-sizing"
             | "font-variation-settings"
+            | "font-feature-settings"
+            | "font-variant-numeric"
             | "text-align"
             | "text-indent"
             | "text-transform"
             | "text-decoration"
             | "text-decoration-line"
+            | "text-decoration-thickness"
+            | "text-underline-offset"
+            | "text-emphasis"
             | "line-height"
             | "white-space"
             | "text-overflow"
             | "-webkit-line-clamp"
+            | "line-clamp"
+            | "hanging-punctuation"
             | "-webkit-box-orient"
             | "overflow-wrap"
             | "word-wrap"
@@ -2239,8 +2577,20 @@ pub fn supports_declaration(name: &str, value: &str) -> bool {
             | "overflow-x"
             | "overflow-y"
             | "scrollbar-gutter"
+            | "scrollbar-width"
+            | "scrollbar-color"
+            | "overscroll-behavior"
+            | "overscroll-behavior-x"
+            | "overscroll-behavior-y"
+            | "resize"
+            | "caption-side"
             | "visibility"
             | "opacity"
+            | "mix-blend-mode"
+            | "background-blend-mode"
+            | "shape-outside"
+            | "shape-image-threshold"
+            | "shape-margin"
             | "animation"
             | "animation-name"
             | "animation-duration"
@@ -2249,6 +2599,8 @@ pub fn supports_declaration(name: &str, value: &str) -> bool {
             | "animation-iteration-count"
             | "animation-direction"
             | "animation-play-state"
+            | "animation-timeline"
+            | "animation-range"
             | "z-index"
             | "clear"
             | "vertical-align"
@@ -2577,6 +2929,177 @@ pub fn supports_declaration(name: &str, value: &str) -> bool {
             value.trim().to_ascii_lowercase().as_str(),
             "normal" | "always"
         ),
+        "text-decoration-thickness" => {
+            let v = value.trim().to_ascii_lowercase();
+            v == "auto" || v == "from-font" || dimension_value(value) != crate::Dimension::Auto
+        }
+        "text-underline-offset" => {
+            let v = value.trim().to_ascii_lowercase();
+            v == "auto" || v == "from-font" || dimension_value(value) != crate::Dimension::Auto
+        }
+        "text-emphasis" => {
+            let lower = value.trim().to_ascii_lowercase();
+            let tokens: Vec<&str> = lower.split_whitespace().collect();
+            tokens.iter().all(|t| {
+                matches!(
+                    *t,
+                    "filled" | "open" | "dot" | "circle" | "double-circle"
+                        | "triangle" | "sesame" | "none" | "currentColor"
+                ) || t.starts_with('#')
+                    || t.starts_with("rgb(")
+                    || t.starts_with("hsl(")
+            })
+        }
+        "hanging-punctuation" => {
+            let lower = value.trim().to_ascii_lowercase();
+            let tokens: Vec<&str> = lower.split_whitespace().collect();
+            !tokens.is_empty()
+                && tokens.iter().all(|t| {
+                    matches!(
+                        *t,
+                        "first" | "last" | "allow-end" | "force-end" | "none"
+                    )
+                })
+        }
+        "line-clamp" => webkit_line_clamp_value(value).is_some(),
+        "caption-side" => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "top" | "bottom" | "top-outside" | "bottom-outside" | "block-start" | "block-end"
+        ),
+        "resize" => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "none" | "both" | "horizontal" | "vertical" | "inline" | "block"
+        ),
+        "overscroll-behavior" => {
+            let tokens: Vec<&str> = value.split_whitespace().collect();
+            !tokens.is_empty()
+                && tokens.len() <= 2
+                && tokens
+                    .iter()
+                    .all(|t| matches!(*t, "none" | "contain"))
+        }
+        "overscroll-behavior-x" | "overscroll-behavior-y" => {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "none" | "contain"
+            )
+        }
+        "scrollbar-width" => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "auto" | "thin" | "none"
+        ),
+        "scrollbar-color" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "auto" {
+                return true;
+            }
+            let tokens: Vec<&str> = v.split_whitespace().collect();
+            tokens.len() == 2 && tokens.iter().all(|t| parse_color(t).is_some())
+        }
+        "mix-blend-mode" => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "normal"
+                | "multiply"
+                | "screen"
+                | "overlay"
+                | "darken"
+                | "lighten"
+                | "color-dodge"
+                | "color-burn"
+                | "hard-light"
+                | "soft-light"
+                | "difference"
+                | "exclusion"
+                | "hue"
+                | "saturation"
+                | "color"
+                | "luminosity"
+                | "plus-darker"
+                | "plus-lighter"
+        ),
+        "background-blend-mode" => {
+            let tokens: Vec<&str> = value.split_whitespace().collect();
+            !tokens.is_empty()
+                && tokens.iter().all(|t| {
+                    matches!(
+                        t.to_ascii_lowercase().as_str(),
+                        "normal"
+                            | "multiply"
+                            | "screen"
+                            | "overlay"
+                            | "darken"
+                            | "lighten"
+                            | "color-dodge"
+                            | "color-burn"
+                            | "hard-light"
+                            | "soft-light"
+                            | "difference"
+                            | "exclusion"
+                            | "hue"
+                            | "saturation"
+                            | "color"
+                            | "luminosity"
+                            | "plus-darker"
+                            | "plus-lighter"
+                    )
+                })
+        }
+        "shape-outside" => {
+            let lower = value.trim().to_ascii_lowercase();
+            lower == "none"
+                || lower == "content-box"
+                || lower == "margin-box"
+                || lower == "border-box"
+                || lower == "padding-box"
+                || lower.starts_with("polygon(")
+                || lower.starts_with("circle(")
+                || lower.starts_with("ellipse(")
+                || lower.starts_with("inset(")
+                || lower.starts_with("url(")
+        }
+        "shape-image-threshold" => value
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .is_some_and(|v| v.is_finite() && v >= 0.0 && v <= 1.0),
+        "shape-margin" => dimension_value(value) != crate::Dimension::Auto,
+        "font-feature-settings" => {
+            let lower = value.trim().to_ascii_lowercase();
+            lower == "normal" || parse_font_feature_settings(value).is_some()
+        }
+        "font-variant-numeric" => {
+            let tokens: Vec<&str> = value.split_whitespace().collect();
+            !tokens.is_empty()
+                && tokens.iter().all(|t| {
+                    matches!(
+                        t.to_ascii_lowercase().as_str(),
+                        "normal"
+                            | "tabular-nums"
+                            | "oldstyle-nums"
+                            | "lining-nums"
+                            | "proportional-nums"
+                            | "diagonal-fractions"
+                            | "stacked-fractions"
+                            | "ordinal"
+                            | "slashed-zero"
+                            | "oldstyle"
+                            | "lining"
+                            | "proportional"
+                    )
+                })
+        }
+        "animation-timeline" => {
+            let lower = value.trim().to_ascii_lowercase();
+            lower == "auto"
+                || lower == "none"
+                || lower.starts_with("scroll(")
+                || lower.starts_with("view(")
+                || lower.starts_with("--")
+        }
+        "animation-range" => {
+            let lower = value.trim().to_ascii_lowercase();
+            lower == "normal" || !lower.is_empty()
+        }
         _ => supports_conservative_known_value(&name, value),
     }
 }

@@ -15671,7 +15671,15 @@ if (typeof EventSource === 'undefined') {
       this._handle = -1;
       this._closed = false;
       this._pollTimer = null;
+      this._retryMs = 3000;
+      this._lastEventId = '';
+      this._reconnectTimer = null;
 
+      const self = this;
+      this._connect();
+    }
+
+    _connect() {
       const self = this;
       (async function() {
         try {
@@ -15680,7 +15688,7 @@ if (typeof EventSource === 'undefined') {
             self._fireError('EventSource not supported');
             return;
           }
-          const result = await ops.op_eventsource_connect(url);
+          const result = await ops.op_eventsource_connect(self.url);
           if (self._closed) {
             ops.op_eventsource_close(result.handle);
             return;
@@ -15709,9 +15717,35 @@ if (typeof EventSource === 'undefined') {
           const raw = Deno.core.ops.op_eventsource_poll(self._handle);
           if (raw && raw !== 'null') {
             const evt = JSON.parse(raw);
+
+            // Check if the connection closed (server hung up)
+            if (evt.closed) {
+              self._handle = -1;
+              self.readyState = EventSource.CONNECTING;
+              if (!self._closed) {
+                self._reconnectTimer = setTimeout(function() {
+                  self._connect();
+                }, self._retryMs);
+              }
+              return;
+            }
+
+            // Update retry timeout from server
+            const state = JSON.parse(Deno.core.ops.op_eventsource_get_state(self._handle));
+            if (state && state.retry !== undefined) {
+              self._retryMs = state.retry;
+            }
+            if (state && state.lastEventId) {
+              self._lastEventId = state.lastEventId;
+            }
+
             const eventType = evt.event || 'message';
             const data = evt.data || '';
-            const id = evt.id || null;
+            const id = evt.id || self._lastEventId;
+
+            if (id) {
+              self._lastEventId = id;
+            }
 
             const event = new MessageEvent(eventType, {
               data: data,
@@ -15745,6 +15779,7 @@ if (typeof EventSource === 'undefined') {
       this._closed = true;
       this.readyState = EventSource.CLOSED;
       if (this._pollTimer !== null) { clearTimeout(this._pollTimer); this._pollTimer = null; }
+      if (this._reconnectTimer !== null) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
       if (this._handle >= 0) {
         try { Deno.core.ops.op_eventsource_close(this._handle); } catch(e) {}
         this._handle = -1;
@@ -15793,7 +15828,7 @@ if (typeof WebSocket === 'undefined') {
           }
           const result = await ops.op_websocket_connect(url);
           if (self._closed) {
-            try { ops.op_websocket_close(result.handle); } catch(e) {}
+            try { ops.op_websocket_close(result.handle, 1000, ''); } catch(e) {}
             return;
           }
           if (result.error) {
@@ -15821,10 +15856,44 @@ if (typeof WebSocket === 'undefined') {
           const raw = Deno.core.ops.op_websocket_receive(self._handle);
           if (raw && raw !== 'null') {
             const msg = JSON.parse(raw);
-            const data = msg.data || '';
-            const event = new MessageEvent('message', { data: data });
-            if (typeof self.onmessage === 'function') { try { self.onmessage(event); } catch(e) {} }
-            try { self.dispatchEvent(event); } catch(e) {}
+            switch (msg.type) {
+              case 'text': {
+                const event = new MessageEvent('message', { data: msg.data });
+                if (typeof self.onmessage === 'function') { try { self.onmessage(event); } catch(e) {} }
+                try { self.dispatchEvent(event); } catch(e) {}
+                break;
+              }
+              case 'binary': {
+                const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0));
+                const event = new MessageEvent('message', { data: bytes.buffer });
+                if (typeof self.onmessage === 'function') { try { self.onmessage(event); } catch(e) {} }
+                try { self.dispatchEvent(event); } catch(e) {}
+                break;
+              }
+              case 'ping': {
+                const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0));
+                try { Deno.core.ops.op_websocket_send_ping(self._handle, bytes); } catch(e) {}
+                break;
+              }
+              case 'pong':
+                break;
+              case 'close': {
+                self.readyState = WebSocket.CLOSING;
+                if (self._handle >= 0) {
+                  try { Deno.core.ops.op_websocket_close(self._handle, msg.code || 1000, msg.reason || ''); } catch(e) {}
+                  self._handle = -1;
+                }
+                self.readyState = WebSocket.CLOSED;
+                if (self._pollTimer !== null) { clearTimeout(self._pollTimer); self._pollTimer = null; }
+                const ev = new Event('close');
+                ev.code = msg.code || 1000;
+                ev.reason = msg.reason || '';
+                ev.wasClean = true;
+                if (typeof self.onclose === 'function') { try { self.onclose(ev); } catch(e) {} }
+                try { self.dispatchEvent(ev); } catch(e) {}
+                return;
+              }
+            }
           }
         } catch(e) { /* ignore poll errors */ }
         if (!self._closed) {
@@ -15858,20 +15927,30 @@ if (typeof WebSocket === 'undefined') {
         throw new DOMException("Failed to execute 'send' on 'WebSocket': The connection state is not 'OPEN'.", 'InvalidStateError');
       }
       if (this._handle < 0) return;
-      const text = typeof data === 'string' ? data : String(data);
-      try { Deno.core.ops.op_websocket_send(this._handle, text); } catch(e) {}
+      try {
+        if (typeof data === 'string') {
+          Deno.core.ops.op_websocket_send(this._handle, data);
+        } else if (data instanceof ArrayBuffer) {
+          Deno.core.ops.op_websocket_send_binary(this._handle, new Uint8Array(data));
+        } else if (ArrayBuffer.isView(data)) {
+          Deno.core.ops.op_websocket_send_binary(this._handle, new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+        } else {
+          Deno.core.ops.op_websocket_send(this._handle, String(data));
+        }
+      } catch(e) {}
     }
 
     close(code, reason) {
       if (this.readyState >= WebSocket.CLOSING) return;
       this.readyState = WebSocket.CLOSING;
-      const self = this;
+      const c = (typeof code === 'number' && code >= 1000 && code <= 65535) ? code : 1000;
+      const r = typeof reason === 'string' ? reason : '';
       if (this._handle >= 0) {
-        try { Deno.core.ops.op_websocket_close(this._handle); } catch(e) {}
+        try { Deno.core.ops.op_websocket_close(this._handle, c, r); } catch(e) {}
         this._handle = -1;
       }
       this.readyState = WebSocket.CLOSED;
-      this._closeCleanup(code || 1000, reason || '', true);
+      this._closeCleanup(c, r, true);
     }
   };
 }

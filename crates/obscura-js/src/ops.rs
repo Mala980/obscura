@@ -432,10 +432,19 @@ pub struct PendingFrameMessage {
 // WebSocket connection handle (page-level WebSocket API, servo parity)
 // ---------------------------------------------------------------------------
 
+/// A typed WebSocket message queued between the I/O thread and JS.
+pub enum WsMessage {
+    Text(String),
+    Binary(Vec<u8>),
+    Ping(Vec<u8>),
+    Pong(Vec<u8>),
+    Close { code: Option<u16>, reason: String },
+}
+
 pub struct WsConnectionHandle {
     pub url: String,
-    pub write_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    pub incoming: Arc<std::sync::Mutex<VecDeque<String>>>,
+    pub write_tx: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+    pub incoming: Arc<std::sync::Mutex<VecDeque<WsMessage>>>,
     pub closed: Arc<AtomicBool>,
 }
 
@@ -454,6 +463,9 @@ pub struct EventSourceConnection {
     pub incoming: Arc<std::sync::Mutex<VecDeque<SseEvent>>>,
     pub close_signal: Option<Arc<AtomicBool>>,
     pub closed: Arc<AtomicBool>,
+    pub last_event_id: Arc<std::sync::Mutex<Option<String>>>,
+    pub retry_ms: Arc<std::sync::Mutex<u64>>,
+    pub with_credentials: bool,
 }
 
 pub struct EventSourceManager {
@@ -5349,10 +5361,10 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                 h
             };
 
-            let incoming: Arc<std::sync::Mutex<VecDeque<String>>> =
+            let incoming: Arc<std::sync::Mutex<VecDeque<WsMessage>>> =
                 Arc::new(std::sync::Mutex::new(VecDeque::new()));
             let closed = Arc::new(AtomicBool::new(false));
-            let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<WsMessage>();
 
             let incoming_clone = incoming.clone();
             let closed_clone = closed.clone();
@@ -5367,7 +5379,22 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
                     // Drain all pending outgoing messages (non-blocking)
                     while let Ok(msg) = write_rx.try_recv() {
                         let Ok(mut wh) = ws.lock() else { break };
-                        if wh.write_message(Message::Text(msg.into())).is_err() {
+                        let result = match msg {
+                            WsMessage::Text(ref t) => wh.write_message(Message::Text(t.clone().into())),
+                            WsMessage::Binary(ref b) => wh.write_message(Message::Binary(b.clone().into())),
+                            WsMessage::Ping(ref b) => wh.write_message(Message::Ping(b.clone().into())),
+                            WsMessage::Pong(ref b) => wh.write_message(Message::Pong(b.clone().into())),
+                            WsMessage::Close { code, ref reason } => {
+                                let frame = tungstenite::protocol::frame::CloseFrame {
+                                    code: tungstenite::protocol::frame::coding::CloseCode::from(
+                                        code.unwrap_or(1000),
+                                    ),
+                                    reason: std::borrow::Cow::Owned(reason.clone()),
+                                };
+                                wh.write_message(Message::Close(Some(frame)))
+                            }
+                        };
+                        if result.is_err() {
                             closed_clone.store(true, Ordering::SeqCst);
                             return;
                         }
@@ -5381,14 +5408,31 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
 
                     match read_result {
                         Ok(Message::Text(text)) => {
-                            incoming_clone.lock().unwrap().push_back(text.to_string());
+                            incoming_clone.lock().unwrap().push_back(WsMessage::Text(text.to_string()));
                         }
                         Ok(Message::Binary(data)) => {
-                            if let Ok(text) = String::from_utf8(data.to_vec()) {
-                                incoming_clone.lock().unwrap().push_back(text);
-                            }
+                            incoming_clone.lock().unwrap().push_back(WsMessage::Binary(data.to_vec()));
                         }
-                        Ok(Message::Close(_)) => break,
+                        Ok(Message::Ping(data)) => {
+                            incoming_clone.lock().unwrap().push_back(WsMessage::Ping(data.to_vec()));
+                        }
+                        Ok(Message::Pong(data)) => {
+                            incoming_clone.lock().unwrap().push_back(WsMessage::Pong(data.to_vec()));
+                        }
+                        Ok(Message::Close(frame)) => {
+                            if let Some(f) = frame {
+                                incoming_clone.lock().unwrap().push_back(WsMessage::Close {
+                                    code: Some(f.code.into()),
+                                    reason: f.reason.to_string(),
+                                });
+                            } else {
+                                incoming_clone.lock().unwrap().push_back(WsMessage::Close {
+                                    code: None,
+                                    reason: String::new(),
+                                });
+                            }
+                            break;
+                        }
                         Ok(_) => {}
                         Err(tungstenite::Error::Io(ref e))
                             if e.kind() == std::io::ErrorKind::TimedOut
@@ -5442,7 +5486,7 @@ fn op_websocket_send(state: &OpState, handle: u32, #[string] message: String) ->
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
     if let Some(conn) = gs.ws_handles.get(&handle) {
-        conn.write_tx.send(message).is_ok()
+        conn.write_tx.send(WsMessage::Text(message)).is_ok()
     } else {
         false
     }
@@ -5454,9 +5498,51 @@ fn op_websocket_send(_state: &OpState, _handle: u32, #[string] _message: String)
     false
 }
 
+/// Send a binary message over a WebSocket connection.
+#[cfg(feature = "websocket")]
+#[op2(fast)]
+fn op_websocket_send_binary(state: &OpState, handle: u32, #[buffer] data: &[u8]) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(conn) = gs.ws_handles.get(&handle) {
+        conn.write_tx
+            .send(WsMessage::Binary(data.to_vec()))
+            .is_ok()
+    } else {
+        false
+    }
+}
+
+#[cfg(not(feature = "websocket"))]
+#[op2(fast)]
+fn op_websocket_send_binary(_state: &OpState, _handle: u32, #[buffer] _data: &[u8]) -> bool {
+    false
+}
+
+/// Send a ping frame over a WebSocket connection.
+#[cfg(feature = "websocket")]
+#[op2(fast)]
+fn op_websocket_send_ping(state: &OpState, handle: u32, #[buffer] data: &[u8]) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(conn) = gs.ws_handles.get(&handle) {
+        conn.write_tx
+            .send(WsMessage::Ping(data.to_vec()))
+            .is_ok()
+    } else {
+        false
+    }
+}
+
+#[cfg(not(feature = "websocket"))]
+#[op2(fast)]
+fn op_websocket_send_ping(_state: &OpState, _handle: u32, #[buffer] _data: &[u8]) -> bool {
+    false
+}
+
 /// Poll for an incoming WebSocket message (non-blocking). Returns a JSON
-/// object `{"data":"..."}` when a message is available, or `"null"` when
-/// the queue is empty.
+/// object `{"type":"text","data":"..."}` or `{"type":"binary","data":"..."}` etc.,
+/// or `"null"` when the queue is empty.
 #[cfg(feature = "websocket")]
 #[op2]
 #[string]
@@ -5465,7 +5551,31 @@ fn op_websocket_receive(state: &OpState, handle: u32) -> String {
     let gs = shared.borrow();
     if let Some(conn) = gs.ws_handles.get(&handle) {
         if let Some(msg) = conn.incoming.lock().unwrap().pop_front() {
-            return serde_json::json!({ "data": msg }).to_string();
+            return match msg {
+                WsMessage::Text(ref t) => {
+                    serde_json::json!({ "type": "text", "data": t }).to_string()
+                }
+                WsMessage::Binary(ref b) => {
+                    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+                    serde_json::json!({ "type": "binary", "data": B64.encode(b) }).to_string()
+                }
+                WsMessage::Ping(ref b) => {
+                    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+                    serde_json::json!({ "type": "ping", "data": B64.encode(b) }).to_string()
+                }
+                WsMessage::Pong(ref b) => {
+                    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+                    serde_json::json!({ "type": "pong", "data": B64.encode(b) }).to_string()
+                }
+                WsMessage::Close { code, ref reason } => {
+                    serde_json::json!({
+                        "type": "close",
+                        "code": code.unwrap_or(1005),
+                        "reason": reason,
+                    })
+                    .to_string()
+                }
+            };
         }
     }
     "null".to_string()
@@ -5478,20 +5588,35 @@ fn op_websocket_receive(_state: &OpState, _handle: u32) -> String {
     "null".to_string()
 }
 
-/// Close a WebSocket connection.
+/// Close a WebSocket connection with optional code and reason.
 #[cfg(feature = "websocket")]
 #[op2(fast)]
-fn op_websocket_close(state: &OpState, handle: u32) -> bool {
+fn op_websocket_close(
+    state: &OpState,
+    handle: u32,
+    code: u32,
+    #[string] reason: String,
+) -> bool {
     let shared = state.borrow::<SharedState>().clone();
     let mut gs = shared.borrow_mut();
-    // Dropping the WsConnectionHandle drops the write_tx, which signals the
-    // write thread to close the socket and exit.
-    gs.ws_handles.remove(&handle).is_some()
+    if let Some(conn) = gs.ws_handles.remove(&handle) {
+        let close_code = if code >= 1000 && code <= 65535 {
+            Some(code as u16)
+        } else {
+            Some(1000)
+        };
+        let _ = conn
+            .write_tx
+            .send(WsMessage::Close { code: close_code, reason });
+        true
+    } else {
+        false
+    }
 }
 
 #[cfg(not(feature = "websocket"))]
 #[op2(fast)]
-fn op_websocket_close(_state: &OpState, _handle: u32) -> bool {
+fn op_websocket_close(_state: &OpState, _handle: u32, _code: u32, #[string] _reason: String) -> bool {
     false
 }
 
@@ -5528,10 +5653,14 @@ async fn op_eventsource_connect(
     let incoming: Arc<std::sync::Mutex<VecDeque<SseEvent>>> = Arc::new(std::sync::Mutex::new(VecDeque::new()));
     let closed = Arc::new(AtomicBool::new(false));
     let close_signal = Arc::new(AtomicBool::new(false));
+    let last_event_id = Arc::new(std::sync::Mutex::new(None::<String>));
+    let retry_ms = Arc::new(std::sync::Mutex::new(3000u64));
 
     let incoming_clone = incoming.clone();
     let closed_clone = closed.clone();
     let close_signal_clone = close_signal.clone();
+    let last_event_id_clone = last_event_id.clone();
+    let retry_ms_clone = retry_ms.clone();
 
     tokio::spawn(async move {
         use futures_util::StreamExt;
@@ -5562,6 +5691,10 @@ async fn op_eventsource_connect(
                                             data: current_data.clone(),
                                             id: current_id.clone(),
                                         };
+                                        // Update last event ID on the connection
+                                        if let Some(ref id) = current_id {
+                                            *last_event_id_clone.lock().unwrap() = Some(id.clone());
+                                        }
                                         incoming_clone.lock().unwrap().push_back(event);
                                         current_data.clear();
                                         current_event = "message".to_string();
@@ -5577,8 +5710,10 @@ async fn op_eventsource_connect(
                                     current_data.push_str(rest.trim_start());
                                 } else if let Some(rest) = line.strip_prefix("id:") {
                                     current_id = Some(rest.trim().to_string());
-                                } else if line.strip_prefix("retry:").is_some() {
-                                    // Retry hint; not implemented yet.
+                                } else if let Some(rest) = line.strip_prefix("retry:") {
+                                    if let Ok(ms) = rest.trim().parse::<u64>() {
+                                        *retry_ms_clone.lock().unwrap() = ms;
+                                    }
                                 }
                             }
                         }
@@ -5602,6 +5737,9 @@ async fn op_eventsource_connect(
                 incoming,
                 close_signal: Some(close_signal),
                 closed,
+                last_event_id,
+                retry_ms,
+                with_credentials: false,
             },
         );
     }
@@ -5618,14 +5756,38 @@ fn op_eventsource_poll(state: &OpState, handle: u32) -> String {
     let shared = state.borrow::<SharedState>().clone();
     let gs = shared.borrow();
     if let Some(conn) = gs.es_manager.connections.get(&handle) {
+        let closed = conn.closed.load(Ordering::SeqCst);
         if let Some(ev) = conn.incoming.lock().unwrap().pop_front() {
             return serde_json::json!({
                 "event": ev.event,
                 "data": ev.data,
                 "id": ev.id,
+                "closed": closed,
             })
             .to_string();
         }
+        if closed {
+            return serde_json::json!({ "closed": true }).to_string();
+        }
+    }
+    "null".to_string()
+}
+
+/// Get the retry timeout and last event ID for an EventSource connection.
+#[op2]
+#[string]
+fn op_eventsource_get_state(state: &OpState, handle: u32) -> String {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(conn) = gs.es_manager.connections.get(&handle) {
+        let retry = *conn.retry_ms.lock().unwrap();
+        let last_id = conn.last_event_id.lock().unwrap().clone();
+        return serde_json::json!({
+            "retry": retry,
+            "lastEventId": last_id,
+            "closed": conn.closed.load(Ordering::SeqCst),
+        })
+        .to_string();
     }
     "null".to_string()
 }
@@ -5635,7 +5797,14 @@ fn op_eventsource_poll(state: &OpState, handle: u32) -> String {
 fn op_eventsource_close(state: &OpState, handle: u32) -> bool {
     let shared = state.borrow::<SharedState>().clone();
     let mut gs = shared.borrow_mut();
-    gs.es_manager.connections.remove(&handle).is_some()
+    if let Some(mut conn) = gs.es_manager.connections.remove(&handle) {
+        if let Some(signal) = conn.close_signal.take() {
+            signal.store(true, Ordering::SeqCst);
+        }
+        true
+    } else {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6241,12 +6410,15 @@ pub fn build_extension() -> Extension {
     {
         ops.push(op_websocket_connect());
         ops.push(op_websocket_send());
+        ops.push(op_websocket_send_binary());
+        ops.push(op_websocket_send_ping());
         ops.push(op_websocket_receive());
         ops.push(op_websocket_close());
     }
     // EventSource (SSE) ops – always registered.
     ops.push(op_eventsource_connect());
     ops.push(op_eventsource_poll());
+    ops.push(op_eventsource_get_state());
     ops.push(op_eventsource_close());
     // GPU rendering ops – always registered (stubs return error when feature off).
     ops.push(op_render_gpu_create());

@@ -733,6 +733,26 @@ pub struct FontVariationSetting {
     pub value: f32,
 }
 
+/// One `font-feature-settings` tag assignment.
+///
+/// Four-character OpenType feature tag plus a numeric enable/disable value.
+/// `true` enables the feature; `false` disables it; a positive integer sets
+/// a specific parameter (e.g. `sstp 3`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FontFeatureSetting {
+    pub tag: [u8; 4],
+    pub value: FontFeatureValue,
+}
+
+/// Value for a `font-feature-settings` entry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FontFeatureValue {
+    /// Enable (`on`/`1`/`true`) or disable (`off`/`0`/`false`) the feature.
+    Bool(bool),
+    /// Set a numeric parameter for the feature (e.g. `sstp 3`).
+    Number(u32),
+}
+
 /// One axis of a CSS `background-position`.
 ///
 /// CSS positions combine an absolute offset with a percentage of the space
@@ -1623,6 +1643,49 @@ pub struct LayoutStyle {
     /// modern web rely on it for depth, and without it those elements paint
     /// flat. See [`BoxShadow`] and `paint::paint_box_shadow`.
     pub box_shadow: Option<BoxShadow>,
+
+    // === New CSS spec compliance properties ===
+
+    /// `text-decoration-thickness` in CSS px. `None` is `auto`/`from-font`.
+    pub text_decoration_thickness: Option<f32>,
+    /// `text-underline-offset` in CSS px. `None` is `auto`/`from-font`.
+    pub text_underline_offset: Option<f32>,
+    /// `text-emphasis` specified value (style + optional color).
+    pub text_emphasis: Option<String>,
+    /// `hanging-punctuation` specified value.
+    pub hanging_punctuation: Option<String>,
+    /// `caption-side` for table captions.
+    pub caption_side: Option<CaptionSide>,
+    /// `resize` for textareas and other resizable elements.
+    pub resize: Option<Resize>,
+    /// `overscroll-behavior-x`. `None` means inherit.
+    pub overscroll_behavior_x: Option<OverscrollBehavior>,
+    /// `overscroll-behavior-y`. `None` means inherit.
+    pub overscroll_behavior_y: Option<OverscrollBehavior>,
+    /// `scrollbar-width`. `None` means inherit.
+    pub scrollbar_width: Option<ScrollbarWidth>,
+    /// `scrollbar-color` as (thumb, track) colors. `None` means auto/inherit.
+    pub scrollbar_color: Option<(Option<[u8; 4]>, Option<[u8; 4]>)>,
+    /// `mix-blend-mode`. `None` means inherit.
+    pub mix_blend_mode: Option<BlendMode>,
+    /// `background-blend-mode` per layer. Empty means initial `normal`.
+    pub background_blend_mode: Vec<BlendMode>,
+    /// `shape-outside`. `None` means `none`/inherit.
+    pub shape_outside: Option<ShapeOutside>,
+    /// `shape-image-threshold` in 0.0..1.0.
+    pub shape_image_threshold: Option<f32>,
+    /// `shape-margin` in CSS px.
+    pub shape_margin: Option<f32>,
+    /// `shape-margin` with unresolved relative units.
+    pub shape_margin_raw: Option<Option<Dimension>>,
+    /// `font-feature-settings`. `None` means inherit; `Some(Vec::new())` is `normal`.
+    pub font_feature_settings: Option<Vec<FontFeatureSetting>>,
+    /// `font-variant-numeric`. `None` means inherit.
+    pub font_variant_numeric: Option<FontVariantNumeric>,
+    /// `animation-timeline`. `None` is `auto`.
+    pub animation_timeline: Option<AnimationTimeline>,
+    /// `animation-range` specified value.
+    pub animation_range: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2338,6 +2401,129 @@ pub enum TextWrapStyle {
     Balance,
     Pretty,
     Stable,
+}
+
+/// CSS `caption-side` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptionSide {
+    Top,
+    Bottom,
+}
+
+/// CSS `resize` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resize {
+    None,
+    Both,
+    Horizontal,
+    Vertical,
+}
+
+/// CSS `overscroll-behavior` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverscrollBehavior {
+    Contain,
+    None,
+}
+
+/// CSS `scrollbar-width` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollbarWidth {
+    Auto,
+    Thin,
+    None,
+}
+
+/// CSS blend mode values for `mix-blend-mode` and `background-blend-mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+    PlusDarker,
+    PlusLighter,
+}
+
+/// CSS `shape-outside` values.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShapeOutside {
+    Polygon(ClipPathPolygon),
+    BasicShape(String),
+    Image(String),
+    ReferenceBox(String),
+}
+
+/// CSS `font-variant-numeric` computed value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontVariantNumeric {
+    pub tabular_nums: bool,
+    pub oldstyle_nums: bool,
+    pub lining_nums: bool,
+    pub proportional_nums: bool,
+    pub diagonal_fractions: bool,
+    pub stacked_fractions: bool,
+    pub ordinal: bool,
+    pub slashed_zero: bool,
+}
+
+impl FontVariantNumeric {
+    pub fn normal() -> Self {
+        Self {
+            tabular_nums: false,
+            oldstyle_nums: false,
+            lining_nums: false,
+            proportional_nums: false,
+            diagonal_fractions: false,
+            stacked_fractions: false,
+            ordinal: false,
+            slashed_zero: false,
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        let mut result = Self::normal();
+        for token in value.split_whitespace() {
+            match token.to_ascii_lowercase().as_str() {
+                "tabular-nums" => result.tabular_nums = true,
+                "oldstyle-nums" | "oldstyle" => result.oldstyle_nums = true,
+                "lining-nums" | "lining" => result.lining_nums = true,
+                "proportional-nums" | "proportional" => result.proportional_nums = true,
+                "diagonal-fractions" => result.diagonal_fractions = true,
+                "stacked-fractions" => result.stacked_fractions = true,
+                "ordinal" => result.ordinal = true,
+                "slashed-zero" => result.slashed_zero = true,
+                _ => {}
+            }
+        }
+        result
+    }
+}
+
+impl Default for FontVariantNumeric {
+    fn default() -> Self {
+        Self::normal()
+    }
+}
+
+/// CSS `animation-timeline` values.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnimationTimeline {
+    Scroll(String),
+    View(String),
+    Custom(String),
 }
 
 /// `scroll-snap-type` axis constraint.
