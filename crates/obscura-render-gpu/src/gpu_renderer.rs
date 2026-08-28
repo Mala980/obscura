@@ -188,7 +188,7 @@ impl GpuRenderer {
             0,
             glow::RGBA,
             glow::UNSIGNED_BYTE,
-            None,
+glow::PixelUnpackData::Slice(None),
         );
         gl.tex_parameter_i32(
             glow::TEXTURE_2D,
@@ -315,7 +315,7 @@ impl GpuRenderer {
                 self.height as i32,
                 glow::RGBA,
                 glow::UNSIGNED_BYTE,
-                glow::PixelPackData::Slice(&mut pixels),
+                glow::PixelPackData::Slice(Some(&mut pixels)),
             );
 
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);

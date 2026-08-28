@@ -155,7 +155,7 @@ impl DisplayListBuilder {
                         x: cx,
                         y: *y,
                         width: char_w,
-                        height: char_h,
+                        height: *char_h,
                         color: [color[0], color[1], color[2], a],
                     });
                     cx += char_w;
@@ -214,17 +214,17 @@ impl DisplayListBuilder {
                 height,
                 color,
             } => {
-                let ix = x.max(&cx);
-                let iy = y.max(&cy);
-                let ix2 = (x + width).min(&(cx + cw));
-                let iy2 = (y + height).min(&(cy + ch));
-                if ix2 > *ix && iy2 > *iy {
+                let ix = x.max(cx);
+                let iy = y.max(cy);
+                let ix2 = (x + width).min(cx + cw);
+                let iy2 = (y + height).min(cy + ch);
+                if ix2 > ix && iy2 > iy {
                     let a = (color[3] as f32 / 255.0 * parent_opacity * 255.0) as u8;
                     quads.push(GpuQuad {
-                        x: *ix,
-                        y: *iy,
-                        width: ix2 - *ix,
-                        height: iy2 - *iy,
+                        x: ix,
+                        y: iy,
+                        width: ix2 - ix,
+                        height: iy2 - iy,
                         color: [color[0], color[1], color[2], a],
                     });
                 }
