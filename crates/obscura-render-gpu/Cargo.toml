@@ -1,0 +1,30 @@
+[package]
+name = "obscura-render-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GPU-accelerated rendering for Obscura using WebRender (servo parity)."
+
+[features]
+default = []
+webrender = ["dep:webrender", "dep:webrender-api", "dep:surfman", "dep:euclid"]
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+obscura-dom = { workspace = true }
+obscura-render = { workspace = true }
+# WebRender (GPU 2D renderer from Firefox)
+webrender = { version = "0.70", optional = true }
+webrender-api = { version = "0.70", optional = true }
+# Surfman (GPU surface management)
+surfman = { version = "0.9", optional = true }
+# Euclid (geometry primitives for WebRender)
+euclid = { version = "0.23", optional = true }
+# Image for texture loading
+image = { version = "0.25", optional = true }

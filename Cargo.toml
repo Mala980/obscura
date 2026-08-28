@@ -8,6 +8,7 @@ members = [
     "crates/obscura-js",
     "crates/obscura-mcp",
     "crates/obscura-render",
+    "crates/obscura-render-gpu",
     "crates/obscura-storage",
     "crates/obscura-media",
     "crates/obscura-cli",
@@ -28,6 +29,7 @@ obscura-cdp = { path = "crates/obscura-cdp" }
 obscura-js = { path = "crates/obscura-js" }
 obscura-mcp = { path = "crates/obscura-mcp" }
 obscura-render = { path = "crates/obscura-render" }
+obscura-render-gpu = { path = "crates/obscura-render-gpu" }
 obscura-storage = { path = "crates/obscura-storage" }
 obscura-media = { path = "crates/obscura-media" }
 

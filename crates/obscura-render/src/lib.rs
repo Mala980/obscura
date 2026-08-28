@@ -1410,6 +1410,19 @@ pub struct LayoutStyle {
     /// itself is visually hidden in a headless screenshot.
     pub scrollbar_gutters: u8,
 
+    // CSS Scroll Snap. These properties control scroll snapping behavior on
+    // scroll containers. `scroll-snap-type` establishes the snap axis and
+    /// strictness; `scroll-snap-align` sets the snap alignment point;
+    /// `scroll-snap-stop` controls whether the scroll container may pass
+    /// over snap positions.
+    pub scroll_snap_axis: ScrollSnapAxis,
+    pub scroll_snap_strictness: ScrollSnapStrictness,
+    /// `scroll-snap-align`: (block-axis, inline-axis) alignment. Both default
+    /// to `None` (no snapping on that axis).
+    pub scroll_snap_align_block: ScrollSnapAlign,
+    pub scroll_snap_align_inline: ScrollSnapAlign,
+    pub scroll_snap_stop: ScrollSnapStop,
+
     /// `float: left|right`. True CSS float needs per-line reflow around the
     /// float's shape, which taffy's block/flex/grid modes do not do; see
     /// `dom::group_float_zone` for the bounded approximation this drives.
@@ -2317,14 +2330,53 @@ fn waapi_is_active(animation: &WaapiAnimation, document_time: AnimationSampleTim
     local < end.max(0.0)
 }
 
-/// The implemented `text-wrap-style` values. Other line-breaking strategies
-/// such as `pretty` remain unsupported until their distinct scoring model is
-/// available; treating them as `auto` would make `@supports` lie.
+/// The implemented `text-wrap-style` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextWrapStyle {
     #[default]
     Auto,
     Balance,
+    Pretty,
+    Stable,
+}
+
+/// `scroll-snap-type` axis constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollSnapAxis {
+    #[default]
+    None,
+    X,
+    Y,
+    Block,
+    Inline,
+    Both,
+}
+
+/// `scroll-snap-type` strictness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollSnapStrictness {
+    #[default]
+    None,
+    Mandatory,
+    Proximity,
+}
+
+/// `scroll-snap-align` alignment value per axis (block, inline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollSnapAlign {
+    #[default]
+    None,
+    Start,
+    End,
+    Center,
+}
+
+/// `scroll-snap-stop` behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollSnapStop {
+    #[default]
+    Normal,
+    Always,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

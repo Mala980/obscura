@@ -1741,6 +1741,8 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
                     Some(crate::TextWrapStyle::Auto)
                 }
                 "balance" | "wrap balance" | "balance wrap" => Some(crate::TextWrapStyle::Balance),
+                "pretty" | "wrap pretty" | "pretty wrap" => Some(crate::TextWrapStyle::Pretty),
+                "stable" | "wrap stable" | "stable wrap" => Some(crate::TextWrapStyle::Stable),
                 // `text-wrap` inherits, so unset behaves as inherit.
                 "inherit" | "unset" => None,
                 _ => style.text_wrap_style,
@@ -1748,8 +1750,12 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
         }
         "text-wrap-style" => {
             style.text_wrap_style = match value.trim().to_ascii_lowercase().as_str() {
-                "auto" | "initial" | "revert" | "revert-layer" => Some(crate::TextWrapStyle::Auto),
+                "auto" | "initial" | "revert" | "revert-layer" => {
+                    Some(crate::TextWrapStyle::Auto)
+                }
                 "balance" => Some(crate::TextWrapStyle::Balance),
+                "pretty" => Some(crate::TextWrapStyle::Pretty),
+                "stable" => Some(crate::TextWrapStyle::Stable),
                 // `text-wrap-style` inherits, so unset behaves as inherit.
                 "inherit" | "unset" => None,
                 _ => style.text_wrap_style,
@@ -1901,6 +1907,79 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
         ),
         "box-shadow" | "-webkit-box-shadow" => {
             style.box_shadow = parse_box_shadow(value, style.color, style.color_scheme_dark);
+        }
+        "scroll-snap-type" => {
+            let lower = value.trim().to_ascii_lowercase();
+            let tokens: Vec<&str> = lower.split_whitespace().collect();
+            if tokens.iter().any(|t| *t == "inherit" || *t == "unset") {
+                style.scroll_snap_axis = crate::ScrollSnapAxis::None;
+                style.scroll_snap_strictness = crate::ScrollSnapStrictness::None;
+            } else {
+                let mut axis = crate::ScrollSnapAxis::None;
+                let mut strictness = crate::ScrollSnapStrictness::None;
+                for &tok in &tokens {
+                    match tok {
+                        "x" => axis = crate::ScrollSnapAxis::X,
+                        "y" => axis = crate::ScrollSnapAxis::Y,
+                        "block" => axis = crate::ScrollSnapAxis::Block,
+                        "inline" => axis = crate::ScrollSnapAxis::Inline,
+                        "both" => axis = crate::ScrollSnapAxis::Both,
+                        "mandatory" => strictness = crate::ScrollSnapStrictness::Mandatory,
+                        "proximity" => strictness = crate::ScrollSnapStrictness::Proximity,
+                        "none" => {
+                            axis = crate::ScrollSnapAxis::None;
+                            strictness = crate::ScrollSnapStrictness::None;
+                        }
+                        "initial" | "revert" | "revert-layer" => {
+                            axis = crate::ScrollSnapAxis::None;
+                            strictness = crate::ScrollSnapStrictness::None;
+                        }
+                        _ => {}
+                    }
+                }
+                style.scroll_snap_axis = axis;
+                style.scroll_snap_strictness = strictness;
+            }
+        }
+        "scroll-snap-align" => {
+            let lower = value.trim().to_ascii_lowercase();
+            let tokens: Vec<&str> = lower.split_whitespace().collect();
+            if tokens.iter().any(|t| *t == "inherit" || *t == "unset") {
+                style.scroll_snap_align_block = crate::ScrollSnapAlign::None;
+                style.scroll_snap_align_inline = crate::ScrollSnapAlign::None;
+            } else {
+                let parse_align = |tok: &str| -> crate::ScrollSnapAlign {
+                    match tok {
+                        "start" => crate::ScrollSnapAlign::Start,
+                        "end" => crate::ScrollSnapAlign::End,
+                        "center" => crate::ScrollSnapAlign::Center,
+                        "none" | "initial" | "revert" | "revert-layer" => {
+                            crate::ScrollSnapAlign::None
+                        }
+                        _ => crate::ScrollSnapAlign::None,
+                    }
+                };
+                match tokens.as_slice() {
+                    [single] => {
+                        let align = parse_align(single);
+                        style.scroll_snap_align_block = align;
+                        style.scroll_snap_align_inline = align;
+                    }
+                    [block, inline] => {
+                        style.scroll_snap_align_block = parse_align(block);
+                        style.scroll_snap_align_inline = parse_align(inline);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "scroll-snap-stop" => {
+            style.scroll_snap_stop = match value.trim().to_ascii_lowercase().as_str() {
+                "always" => crate::ScrollSnapStop::Always,
+                "normal" | "initial" | "revert" | "revert-layer" => crate::ScrollSnapStop::Normal,
+                "inherit" | "unset" => crate::ScrollSnapStop::Normal,
+                _ => style.scroll_snap_stop,
+            };
         }
         _ => {}
     }
@@ -2220,6 +2299,9 @@ pub fn supports_declaration(name: &str, value: &str) -> bool {
             | "content-visibility"
             | "box-shadow"
             | "-webkit-box-shadow"
+            | "scroll-snap-type"
+            | "scroll-snap-align"
+            | "scroll-snap-stop"
     );
     if !known {
         return false;
@@ -2306,9 +2388,15 @@ pub fn supports_declaration(name: &str, value: &str) -> bool {
         ),
         "text-wrap" => matches!(
             value.to_ascii_lowercase().as_str(),
-            "auto" | "wrap" | "balance" | "wrap balance" | "balance wrap"
+            "auto" | "wrap" | "balance" | "pretty" | "stable"
+                | "wrap balance" | "balance wrap"
+                | "wrap pretty" | "pretty wrap"
+                | "wrap stable" | "stable wrap"
         ),
-        "text-wrap-style" => matches!(value.to_ascii_lowercase().as_str(), "auto" | "balance"),
+        "text-wrap-style" => matches!(
+            value.to_ascii_lowercase().as_str(),
+            "auto" | "balance" | "pretty" | "stable"
+        ),
         "text-indent" => parse_text_indent(value).is_some(),
         "animation-duration" => parse_animation_time_ms(value).is_some_and(|time| time >= 0.0),
         "animation-delay" => parse_animation_time_ms(value).is_some(),
@@ -2461,6 +2549,34 @@ pub fn supports_declaration(name: &str, value: &str) -> bool {
                     )
                 })
         }
+        "scroll-snap-type" => {
+            let lower = value.trim().to_ascii_lowercase();
+            let tokens: Vec<&str> = lower.split_whitespace().collect();
+            tokens.iter().all(|tok| {
+                matches!(
+                    *tok,
+                    "none" | "x" | "y" | "block" | "inline" | "both"
+                        | "mandatory" | "proximity"
+                )
+            }) && tokens.iter().any(|tok| {
+                matches!(
+                    *tok,
+                    "none" | "x" | "y" | "block" | "inline" | "both"
+                )
+            })
+        }
+        "scroll-snap-align" => {
+            let lower = value.trim().to_ascii_lowercase();
+            let tokens: Vec<&str> = lower.split_whitespace().collect();
+            tokens.len() <= 2
+                && tokens
+                    .iter()
+                    .all(|tok| matches!(*tok, "none" | "start" | "end" | "center"))
+        }
+        "scroll-snap-stop" => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "normal" | "always"
+        ),
         _ => supports_conservative_known_value(&name, value),
     }
 }

@@ -23,6 +23,8 @@ canvas2d = ["dep:kurbo"]
 media = ["dep:obscura-media"]
 # GPU-accelerated WebGL via glow (OpenGL bindings) + EGL headless context.
 webgl-gpu = ["dep:glow", "dep:egl"]
+# GPU-accelerated rendering via WebRender (servo parity).
+render-gpu = ["dep:obscura-render-gpu"]
 
 [build-dependencies]
 deno_core = "0.350"
@@ -65,6 +67,7 @@ getrandom = "0.2"
 num-bigint = { version = "0.4", default-features = false, features = ["std"] }
 num-traits = "0.2"
 obscura-render = { workspace = true, optional = true }
+obscura-render-gpu = { workspace = true, optional = true }
 # WebSocket client for page-level WebSocket API (servo parity).
 tungstenite = { workspace = true, optional = true }
 # Canvas 2D path rendering (servo-canvas parity).

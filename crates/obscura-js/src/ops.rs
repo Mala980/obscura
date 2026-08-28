@@ -50,6 +50,28 @@ impl MediaPlayerStore {
     }
 }
 
+#[cfg(feature = "render-gpu")]
+pub(crate) struct GpuRendererStore {
+    renderers: HashMap<u32, obscura_render_gpu::GpuRenderer>,
+    next_handle: u32,
+}
+
+#[cfg(feature = "render-gpu")]
+impl GpuRendererStore {
+    pub(crate) fn new() -> Self {
+        Self {
+            renderers: HashMap::new(),
+            next_handle: 1,
+        }
+    }
+
+    fn next_handle(&mut self) -> u32 {
+        let h = self.next_handle;
+        self.next_handle += 1;
+        h
+    }
+}
+
 pub type InterceptCallback = Arc<
     tokio::sync::Mutex<
         Option<Box<dyn Fn(String, String, String) -> Option<(u16, String, String)> + Send + Sync>>,
@@ -373,6 +395,9 @@ pub struct ObscuraState {
     /// Media players opened by this page (servo-media parity).
     #[cfg(feature = "media")]
     pub media_player_store: MediaPlayerStore,
+    /// GPU-accelerated renderers opened by this page (servo WebRender parity).
+    #[cfg(feature = "render-gpu")]
+    pub gpu_renderer_store: GpuRendererStore,
     /// Web Worker manager.
     pub worker_manager: WorkerManager,
 }
@@ -519,6 +544,8 @@ impl ObscuraState {
             },
             #[cfg(feature = "media")]
             media_player_store: MediaPlayerStore::new(),
+            #[cfg(feature = "render-gpu")]
+            gpu_renderer_store: GpuRendererStore::new(),
             worker_manager: WorkerManager::new(),
         }
     }
@@ -5879,6 +5906,171 @@ fn op_media_get_state(state: &OpState, handle: u32) -> String {
 // Web Worker ops
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// GPU rendering ops (servo WebRender parity)
+// ---------------------------------------------------------------------------
+
+/// Create a GPU-accelerated renderer. Returns a renderer handle.
+#[cfg(feature = "render-gpu")]
+#[op2]
+#[serde]
+fn op_render_gpu_create(state: &OpState, width: u32, height: u32) -> serde_json::Value {
+    let shared = state.borrow::<SharedState>().clone();
+    let mut gs = shared.borrow_mut();
+    let handle = gs.gpu_renderer_store.next_handle();
+    let renderer = obscura_render_gpu::GpuRenderer::new(width, height);
+    gs.gpu_renderer_store.renderers.insert(handle, renderer);
+    serde_json::json!({ "handle": handle })
+}
+
+#[cfg(not(feature = "render-gpu"))]
+#[op2]
+#[serde]
+fn op_render_gpu_create(_state: &OpState, _width: u32, _height: u32) -> serde_json::Value {
+    serde_json::json!({ "error": "render-gpu feature not enabled" })
+}
+
+/// Initialize the GPU renderer's pipeline (must be called before rendering).
+#[cfg(feature = "render-gpu")]
+#[op2(fast)]
+fn op_render_gpu_initialize(state: &OpState, handle: u32) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(renderer) = gs.gpu_renderer_store.renderers.get(&handle) {
+        // Synchronous wrapper around the async initialize; for a real WebRender
+        // backend this would block on the GPU device setup.
+        let rt = tokio::runtime::Handle::current();
+        let renderer_clone = {
+            // We cannot .await here in a sync op, but initialize is infallible
+            // in the stub. A real impl would use a channel or spawn.
+            drop(gs);
+            let mut gs = shared.borrow_mut();
+            gs.gpu_renderer_store.renderers.remove(&handle)
+        };
+        if let Some(renderer) = renderer_clone {
+            let rt = tokio::runtime::Handle::current();
+            let result = rt.block_on(renderer.initialize());
+            let mut gs = shared.borrow_mut();
+            match result {
+                Ok(()) => {
+                    gs.gpu_renderer_store.renderers.insert(handle, renderer);
+                    true
+                }
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+#[cfg(not(feature = "render-gpu"))]
+#[op2(fast)]
+fn op_render_gpu_initialize(_state: &OpState, _handle: u32) -> bool {
+    false
+}
+
+/// Resize the GPU renderer's framebuffer.
+#[cfg(feature = "render-gpu")]
+#[op2(fast)]
+fn op_render_gpu_resize(state: &OpState, handle: u32, width: u32, height: u32) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let mut gs = shared.borrow_mut();
+    if let Some(renderer) = gs.gpu_renderer_store.renderers.get_mut(&handle) {
+        let rt = tokio::runtime::Handle::current();
+        let _ = rt.block_on(renderer.resize(width, height));
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(not(feature = "render-gpu"))]
+#[op2(fast)]
+fn op_render_gpu_resize(_state: &OpState, _handle: u32, _width: u32, _height: u32) -> bool {
+    false
+}
+
+/// Render the GPU display list and return raw RGBA pixels.
+#[cfg(feature = "render-gpu")]
+#[op2]
+#[string]
+fn op_render_gpu_render(state: &OpState, handle: u32) -> String {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(renderer) = gs.gpu_renderer_store.renderers.get(&handle) {
+        let rt = tokio::runtime::Handle::current();
+        match rt.block_on(renderer.render()) {
+            Ok(pixels) => {
+                // Return pixel data as base64-encoded RGBA buffer
+                use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+                let b64 = BASE64.encode(&pixels);
+                let (w, h) = renderer.dimensions();
+                serde_json::json!({
+                    "ok": true,
+                    "width": w,
+                    "height": h,
+                    "pixels": b64,
+                })
+                .to_string()
+            }
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        }
+    } else {
+        serde_json::json!({ "ok": false, "error": "invalid renderer handle" }).to_string()
+    }
+}
+
+#[cfg(not(feature = "render-gpu"))]
+#[op2]
+#[string]
+fn op_render_gpu_render(_state: &OpState, _handle: u32) -> String {
+    serde_json::json!({ "ok": false, "error": "render-gpu feature not enabled" }).to_string()
+}
+
+/// Get the GPU renderer's current state (Uninitialized/Initializing/Ready/Error).
+#[cfg(feature = "render-gpu")]
+#[op2]
+#[string]
+fn op_render_gpu_get_state(state: &OpState, handle: u32) -> String {
+    let shared = state.borrow::<SharedState>().clone();
+    let gs = shared.borrow();
+    if let Some(renderer) = gs.gpu_renderer_store.renderers.get(&handle) {
+        let rt = tokio::runtime::Handle::current();
+        let state = rt.block_on(renderer.get_state());
+        serde_json::json!({
+            "state": format!("{:?}", state),
+        })
+        .to_string()
+    } else {
+        serde_json::json!({ "state": "Invalid" }).to_string()
+    }
+}
+
+#[cfg(not(feature = "render-gpu"))]
+#[op2]
+#[string]
+fn op_render_gpu_get_state(_state: &OpState, _handle: u32) -> String {
+    serde_json::json!({ "state": "Unavailable" }).to_string()
+}
+
+/// Destroy a GPU renderer, freeing its resources.
+#[cfg(feature = "render-gpu")]
+#[op2(fast)]
+fn op_render_gpu_destroy(state: &OpState, handle: u32) -> bool {
+    let shared = state.borrow::<SharedState>().clone();
+    let mut gs = shared.borrow_mut();
+    gs.gpu_renderer_store.renderers.remove(&handle).is_some()
+}
+
+#[cfg(not(feature = "render-gpu"))]
+#[op2(fast)]
+fn op_render_gpu_destroy(_state: &OpState, _handle: u32) -> bool {
+    false
+}
+
 /// Create a new Web Worker. The JS shim fetches the script and passes the source
 /// code here. Returns a worker handle.
 #[op2]
@@ -6056,6 +6248,13 @@ pub fn build_extension() -> Extension {
     ops.push(op_eventsource_connect());
     ops.push(op_eventsource_poll());
     ops.push(op_eventsource_close());
+    // GPU rendering ops – always registered (stubs return error when feature off).
+    ops.push(op_render_gpu_create());
+    ops.push(op_render_gpu_initialize());
+    ops.push(op_render_gpu_resize());
+    ops.push(op_render_gpu_render());
+    ops.push(op_render_gpu_get_state());
+    ops.push(op_render_gpu_destroy());
     // Only registered when the render feature is compiled in. bootstrap.js
     // probes with typeof before calling, so the op's absence is a clean fallback.
     #[cfg(feature = "render")]

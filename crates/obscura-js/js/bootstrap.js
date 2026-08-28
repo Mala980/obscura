@@ -58,6 +58,7 @@
     'Scheduler',
     'XMLHttpRequestEventTarget', 'HTMLMediaElement', 'HTMLVideoElement',
     'HTMLAudioElement', 'WebGL2RenderingContext',
+    'MediaSource', 'SourceBuffer', 'TimeRanges',
     'SVGElement', 'SVGGraphicsElement', 'SVGGeometryElement', 'SVGPathElement',
     'SVGSVGElement',
   ];
@@ -5943,6 +5944,161 @@ globalThis.HTMLImageElement = HTMLImageElement;
 _markNative(HTMLImageElement);
 _markNative(HTMLImageElement.prototype.decode);
 
+// --- MediaSource API ---------------------------------------------------------
+const _mediaSourceStore = new Map();
+const _sourceBufferStore = new Map();
+let _msIdSeq = 0;
+
+class SourceBuffer {
+  constructor(type, _msRef) {
+    this._type = type;
+    this._buffer = new Uint8Array(0);
+    this._updating = false;
+    this._timestampOffset = 0;
+    this._mode = 'segments';
+    this._msRef = _msRef;
+    this._sbId = ++_msIdSeq;
+    this._buffered = [];
+    this._listeners = {};
+    _sourceBufferStore.set(this._sbId, this);
+  }
+  addEventListener(type, fn) {
+    if (!fn) return;
+    if (!this._listeners[type]) this._listeners[type] = [];
+    if (!this._listeners[type].includes(fn)) this._listeners[type].push(fn);
+  }
+  removeEventListener(type, fn) {
+    if (this._listeners?.[type]) {
+      this._listeners[type] = this._listeners[type].filter(h => h !== fn);
+    }
+  }
+  dispatchEvent(event) {
+    if (!event || !event.type) return false;
+    const handlers = (this._listeners?.[event.type] || []).slice();
+    for (const h of handlers) { try { h.call(this, event); } catch (e) {} }
+    const prop = 'on' + event.type;
+    if (typeof this[prop] === 'function') {
+      try { this[prop](event); } catch (e) {}
+    }
+    return true;
+  }
+  get updating() { return this._updating; }
+  get timestampOffset() { return this._timestampOffset; }
+  set timestampOffset(v) {
+    this._timestampOffset = v;
+    this.dispatchEvent(new Event('timestampoffsetchange'));
+  }
+  get mode() { return this._mode; }
+  set mode(v) {
+    if (v !== 'segments' && v !== 'sequence') throw new TypeError('Invalid mode');
+    this._mode = v;
+  }
+  get buffered() {
+    const ranges = new TimeRanges();
+    for (const r of this._buffered) {
+      ranges._ranges.push(r);
+    }
+    return ranges;
+  }
+  appendBuffer(data) {
+    if (this._updating) throw new DOMException('The SourceBuffer is being updated', 'InvalidStateError');
+    this._updating = true;
+    const self = this;
+    setTimeout(() => {
+      self._updating = false;
+      self.dispatchEvent(new Event('updateend'));
+    }, 0);
+  }
+  remove(start, end) {
+    if (this._updating) throw new DOMException('The SourceBuffer is being updated', 'InvalidStateError');
+    this._updating = true;
+    const self = this;
+    setTimeout(() => {
+      self._updating = false;
+      self.dispatchEvent(new Event('updateend'));
+    }, 0);
+  }
+  abort() {
+    if (this._updating) {
+      this._updating = false;
+    }
+    this._buffer = new Uint8Array(0);
+    this._buffered = [];
+  }
+}
+
+class MediaSource {
+  constructor() {
+    this._readyState = 'closed';
+    this._sourceBuffers = [];
+    this._duration = NaN;
+    this._msId = ++_msIdSeq;
+    this._listeners = {};
+    _mediaSourceStore.set(this._msId, this);
+  }
+  static get typeSupported() {
+    return {
+      'video/mp4; codecs="avc1.42E01E"': true,
+      'video/mp4; codecs="avc1.42E01E, mp4a.40.2"': true,
+      'video/webm; codecs="vp8, vorbis"': true,
+      'audio/mp4; codecs="mp4a.40.2"': true,
+    };
+  }
+  addEventListener(type, fn) {
+    if (!fn) return;
+    if (!this._listeners[type]) this._listeners[type] = [];
+    if (!this._listeners[type].includes(fn)) this._listeners[type].push(fn);
+  }
+  removeEventListener(type, fn) {
+    if (this._listeners?.[type]) {
+      this._listeners[type] = this._listeners[type].filter(h => h !== fn);
+    }
+  }
+  dispatchEvent(event) {
+    if (!event || !event.type) return false;
+    const handlers = (this._listeners?.[event.type] || []).slice();
+    for (const h of handlers) { try { h.call(this, event); } catch (e) {} }
+    const prop = 'on' + event.type;
+    if (typeof this[prop] === 'function') {
+      try { this[prop](event); } catch (e) {}
+    }
+    return true;
+  }
+  open() {
+    if (this._readyState !== 'closed') return;
+    this._readyState = 'open';
+    this.dispatchEvent(new Event('sourceopen'));
+  }
+  get readyState() { return this._readyState; }
+  get sourceBuffers() {
+    return this._sourceBuffers;
+  }
+  get activeSourceBuffers() {
+    return this._sourceBuffers;
+  }
+  addSourceBuffer(type) {
+    if (this._readyState !== 'open') throw new DOMException('The readyState is not open', 'InvalidStateError');
+    const sb = new SourceBuffer(type, this);
+    this._sourceBuffers.push(sb);
+    return sb;
+  }
+  removeSourceBuffer(sourceBuffer) {
+    const idx = this._sourceBuffers.indexOf(sourceBuffer);
+    if (idx >= 0) {
+      this._sourceBuffers.splice(idx, 1);
+      _sourceBufferStore.delete(sourceBuffer._sbId);
+    }
+  }
+  endOfStream(error) {
+    if (this._readyState !== 'open') throw new DOMException('The readyState is not open', 'InvalidStateError');
+    this._readyState = 'ended';
+    this.dispatchEvent(new Event('ended'));
+  }
+  set duration(v) { this._duration = v; }
+  get duration() { return this._duration; }
+}
+
+// --- HTMLMediaElement --------------------------------------------------------
 // Report only capabilities backed by a real decoder. Poster rendering is an
 // image operation and does not make any audio/video container playable.
 class HTMLMediaElement extends Element {
@@ -5959,6 +6115,18 @@ class HTMLMediaElement extends Element {
     super(nid);
     this._mediaPlayerHandle = 0;
     this._mediaState = 'idle';
+    this._volume = 1;
+    this._muted = false;
+    this._loop = false;
+    this._playbackRate = 1;
+    this._autoplay = false;
+    this._preload = 'metadata';
+    this._seeking = false;
+    this._readyState = HTMLMediaElement.HAVE_NOTHING;
+    this._networkState = HTMLMediaElement.NETWORK_EMPTY;
+    this._currentTime = 0;
+    this._duration = NaN;
+    this._mediaSource = null;
   }
   canPlayType(type) {
     if (typeof Deno.core.ops.op_media_can_play_type === 'function') {
@@ -5973,9 +6141,20 @@ class HTMLMediaElement extends Element {
       }
       this._mediaPlayerHandle = 0;
       this._mediaState = 'idle';
+      this._networkState = HTMLMediaElement.NETWORK_EMPTY;
+      this._readyState = HTMLMediaElement.HAVE_NOTHING;
+      this._currentTime = 0;
+      this._duration = NaN;
+      this.dispatchEvent(new Event('emptied'));
     }
     const src = this.src;
-    if (!src) return;
+    if (!src) {
+      this._networkState = HTMLMediaElement.NETWORK_NO_SOURCE;
+      this.dispatchEvent(new Event('error'));
+      return;
+    }
+    this._networkState = HTMLMediaElement.NETWORK_LOADING;
+    this.dispatchEvent(new Event('loadstart'));
     if (typeof Deno.core.ops.op_media_create_player === 'function') {
       try {
         const result = JSON.parse(Deno.core.ops.op_media_create_player());
@@ -5985,7 +6164,19 @@ class HTMLMediaElement extends Element {
           const mime = this._guessMimeType(src);
           Deno.core.ops.op_media_load(this._mediaPlayerHandle, src, mime);
         }
-      } catch (_e) {}
+        this._readyState = HTMLMediaElement.HAVE_METADATA;
+        this.dispatchEvent(new Event('loadedmetadata'));
+        this._readyState = HTMLMediaElement.HAVE_CURRENT_DATA;
+        this.dispatchEvent(new Event('loadeddata'));
+        this._readyState = HTMLMediaElement.HAVE_ENOUGH_DATA;
+        this._networkState = HTMLMediaElement.NETWORK_IDLE;
+        this.dispatchEvent(new Event('canplay'));
+        this.dispatchEvent(new Event('canplaythrough'));
+      } catch (_e) {
+        this._networkState = HTMLMediaElement.NETWORK_NO_SOURCE;
+        this._readyState = HTMLMediaElement.HAVE_NOTHING;
+        this.dispatchEvent(new Event('error'));
+      }
     }
   }
   _guessMimeType(src) {
@@ -6003,6 +6194,9 @@ class HTMLMediaElement extends Element {
     if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_play === 'function') {
       Deno.core.ops.op_media_play(this._mediaPlayerHandle);
       this._mediaState = 'playing';
+      this._readyState = HTMLMediaElement.HAVE_ENOUGH_DATA;
+      this.dispatchEvent(new Event('play'));
+      this.dispatchEvent(new Event('playing'));
       return Promise.resolve();
     }
     return Promise.reject(new DOMException(
@@ -6014,6 +6208,8 @@ class HTMLMediaElement extends Element {
     if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_pause === 'function') {
       Deno.core.ops.op_media_pause(this._mediaPlayerHandle);
       this._mediaState = 'paused';
+      this._paused = true;
+      this.dispatchEvent(new Event('pause'));
     }
   }
   get NETWORK_EMPTY() { return HTMLMediaElement.NETWORK_EMPTY; }
@@ -6027,61 +6223,82 @@ class HTMLMediaElement extends Element {
   get HAVE_ENOUGH_DATA() { return HTMLMediaElement.HAVE_ENOUGH_DATA; }
   get paused() { return this._mediaState === 'paused'; }
   get ended() { return this._mediaState === 'ended'; }
-  get networkState() {
-    if (!this._mediaPlayerHandle) return HTMLMediaElement.NETWORK_EMPTY;
-    if (this._mediaState === 'loading') return HTMLMediaElement.NETWORK_LOADING;
-    return HTMLMediaElement.NETWORK_IDLE;
-  }
-  get readyState() {
-    if (!this._mediaPlayerHandle) return HTMLMediaElement.HAVE_NOTHING;
-    return HTMLMediaElement.HAVE_NOTHING;
-  }
+  get seeking() { return this._seeking; }
+  get networkState() { return this._networkState; }
+  get readyState() { return this._readyState; }
   get error() { return null; }
-  get seeking() { return false; }
   get currentTime() {
     if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_get_state === 'function') {
       try {
         const st = JSON.parse(Deno.core.ops.op_media_get_state(this._mediaPlayerHandle));
-        return st.currentTime || 0;
+        this._currentTime = st.currentTime || 0;
+        this._duration = st.duration || NaN;
       } catch (_e) {}
     }
-    return 0;
+    return this._currentTime;
   }
   set currentTime(v) {
+    const newTime = Number(v) || 0;
+    this._seeking = true;
+    this.dispatchEvent(new Event('seeking'));
     if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_seek === 'function') {
-      Deno.core.ops.op_media_seek(this._mediaPlayerHandle, Number(v) || 0);
+      Deno.core.ops.op_media_seek(this._mediaPlayerHandle, newTime);
     }
+    this._currentTime = newTime;
+    this._seeking = false;
+    this.dispatchEvent(new Event('seeked'));
+    this.dispatchEvent(new Event('timeupdate'));
   }
   get duration() {
     if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_get_state === 'function') {
       try {
         const st = JSON.parse(Deno.core.ops.op_media_get_state(this._mediaPlayerHandle));
-        return st.duration || NaN;
+        if (st.duration && st.duration !== this._duration) {
+          this._duration = st.duration;
+          this.dispatchEvent(new Event('durationchange'));
+        }
       } catch (_e) {}
     }
-    return NaN;
+    return this._duration;
   }
-  get volume() { return this._volume || 1; }
+  get volume() { return this._volume; }
   set volume(v) {
-    this._volume = Math.max(0, Math.min(1, Number(v) || 0));
+    const newVol = Math.max(0, Math.min(1, Number(v) || 0));
+    if (newVol !== this._volume) {
+      this._volume = newVol;
+      this.dispatchEvent(new Event('volumechange'));
+    }
     if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_set_volume === 'function') {
       Deno.core.ops.op_media_set_volume(this._mediaPlayerHandle, this._volume);
     }
   }
-  get muted() { return this._muted || false; }
+  get muted() { return this._muted; }
   set muted(v) {
-    this._muted = !!v;
+    const newMuted = !!v;
+    if (newMuted !== this._muted) {
+      this._muted = newMuted;
+      this.dispatchEvent(new Event('volumechange'));
+    }
     if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_set_muted === 'function') {
       Deno.core.ops.op_media_set_muted(this._mediaPlayerHandle, this._muted);
     }
   }
-  get loop() { return this._loop || false; }
+  get loop() { return this._loop; }
   set loop(v) {
     this._loop = !!v;
     if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_set_loop === 'function') {
       Deno.core.ops.op_media_set_loop(this._mediaPlayerHandle, this._loop);
     }
   }
+  get playbackRate() { return this._playbackRate; }
+  set playbackRate(v) {
+    this._playbackRate = Number(v) || 1;
+    this.dispatchEvent(new Event('ratechange'));
+  }
+  get autoplay() { return this._autoplay; }
+  set autoplay(v) { this._autoplay = !!v; }
+  get preload() { return this._preload; }
+  set preload(v) { this._preload = String(v); }
   get src() {
     const raw = this.getAttribute("src");
     if (!raw) return "";
@@ -6093,6 +6310,12 @@ class HTMLMediaElement extends Element {
     this.load();
   }
   get currentSrc() { return this.src || ""; }
+  get mediaSource() { return this._mediaSource; }
+  set mediaSource(v) {
+    if (v && v instanceof MediaSource) {
+      this._mediaSource = v;
+    }
+  }
   get textTracks() {
     return TextTrackList.from(
       Array.from(this.querySelectorAll("track")).map((element) => element.track)
@@ -6101,12 +6324,33 @@ class HTMLMediaElement extends Element {
   addTextTrack(kind, label = "", language = "") {
     return new TextTrack(null, String(kind), String(label), String(language));
   }
+  requestPictureInPicture() {
+    return Promise.reject(new DOMException('Picture-in-Picture is not available', 'NotSupportedError'));
+  }
+  getVideoPlaybackQuality() {
+    return {
+      totalVideoFrames: 0,
+      droppedVideoFrames: 0,
+      corruptedVideoFrames: 0,
+      totalFrameDelay: 0,
+      totalPackageDelay: 0,
+    };
+  }
 }
 _markNative(HTMLMediaElement.prototype.canPlayType);
 _markNative(HTMLMediaElement.prototype.play);
 _markNative(HTMLMediaElement.prototype.load);
 _markNative(HTMLMediaElement.prototype.pause);
+_markNative(HTMLMediaElement.prototype.requestPictureInPicture);
+_markNative(HTMLMediaElement.prototype.getVideoPlaybackQuality);
+
 class HTMLVideoElement extends HTMLMediaElement {
+  constructor(nid) {
+    super(nid);
+    this._videoWidth = 0;
+    this._videoHeight = 0;
+    this._pip = false;
+  }
   get poster() {
     const raw = this.getAttribute("poster");
     if (!raw) return "";
@@ -6114,10 +6358,65 @@ class HTMLVideoElement extends HTMLMediaElement {
     catch (_error) { return raw; }
   }
   set poster(value) { this.setAttribute("poster", value); }
-  get videoWidth() { return 0; }
-  get videoHeight() { return 0; }
+  get videoWidth() {
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_get_state === 'function') {
+      try {
+        const st = JSON.parse(Deno.core.ops.op_media_get_state(this._mediaPlayerHandle));
+        if (st.videoWidth) this._videoWidth = st.videoWidth;
+      } catch (_e) {}
+    }
+    return this._videoWidth;
+  }
+  get videoHeight() {
+    if (this._mediaPlayerHandle && typeof Deno.core.ops.op_media_get_state === 'function') {
+      try {
+        const st = JSON.parse(Deno.core.ops.op_media_get_state(this._mediaPlayerHandle));
+        if (st.videoHeight) this._videoHeight = st.videoHeight;
+      } catch (_e) {}
+    }
+    return this._videoHeight;
+  }
+  get pictureInPicture() { return this._pip; }
+  requestPictureInPicture() {
+    this._pip = true;
+    this.dispatchEvent(new Event('enterpictureinpicture'));
+    return Promise.resolve();
+  }
+  exitPictureInPicture() {
+    this._pip = false;
+    this.dispatchEvent(new Event('leavepictureinpicture'));
+    return Promise.resolve();
+  }
+  getCapabilities() {
+    return { hardwareAcceleration: false };
+  }
+  getSettings() {
+    return {
+      width: this.videoWidth,
+      height: this.videoHeight,
+    };
+  }
 }
-class HTMLAudioElement extends HTMLMediaElement {}
+
+class HTMLAudioElement extends HTMLMediaElement {
+  constructor(nid) {
+    super(nid);
+  }
+}
+
+// --- TimeRanges --------------------------------------------------------------
+class TimeRanges {
+  constructor() { this._ranges = []; }
+  get length() { return this._ranges.length; }
+  start(i) {
+    if (i < 0 || i >= this._ranges.length) throw new DOMException('Index size error', 'IndexSizeError');
+    return this._ranges[i][0];
+  }
+  end(i) {
+    if (i < 0 || i >= this._ranges.length) throw new DOMException('Index size error', 'IndexSizeError');
+    return this._ranges[i][1];
+  }
+}
 class HTMLTrackElement extends Element {
   static NONE = 0;
   static LOADING = 1;
@@ -6144,6 +6443,9 @@ class HTMLTrackElement extends Element {
 globalThis.HTMLMediaElement = HTMLMediaElement;
 globalThis.HTMLVideoElement = HTMLVideoElement;
 globalThis.HTMLAudioElement = HTMLAudioElement;
+globalThis.MediaSource = MediaSource;
+globalThis.SourceBuffer = SourceBuffer;
+globalThis.TimeRanges = TimeRanges;
 globalThis.HTMLTrackElement = HTMLTrackElement;
 globalThis.TextTrack = TextTrack;
 globalThis.TextTrackList = TextTrackList;
@@ -13628,9 +13930,63 @@ HTMLCanvasElement.prototype.getContext = function getContext(type) {
     }
     return this._webglCtx;
   }
+  // GPU-accelerated 2D rendering via WebRender (servo parity).
+  if (type === 'gpu' || type === 'webgpu') {
+    if (!this._gpuCtx) {
+      try {
+        const w = (this && +this.getAttribute('width')) || 300;
+        const h = (this && +this.getAttribute('height')) || 150;
+        if (typeof Deno.core.ops.op_render_gpu_create === 'function') {
+          const result = Deno.core.ops.op_render_gpu_create(w, h);
+          if (result && result.handle) {
+            this._gpuHandle = result.handle;
+            Deno.core.ops.op_render_gpu_initialize(result.handle);
+            this._gpuCtx = {
+              _handle: result.handle,
+              _canvas: this,
+              _width: w,
+              _height: h,
+              resize: (width, height) => {
+                this._width = width;
+                this._height = height;
+                Deno.core.ops.op_render_gpu_resize(this._handle, width, height);
+              },
+              render: () => {
+                const result = Deno.core.ops.op_render_gpu_render(this._handle);
+                return result;
+              },
+              destroy: () => {
+                Deno.core.ops.op_render_gpu_destroy(this._handle);
+                this._gpuCtx = null;
+                this._gpuHandle = null;
+              },
+            };
+          }
+        }
+        if (!this._gpuCtx) {
+          // Fallback to software canvas if GPU rendering unavailable
+          this._gpuCtx = new _Canvas2D(this);
+        }
+      }
+      catch (_error) { return null; }
+    }
+    return this._gpuCtx;
+  }
   return null;
 };
 HTMLCanvasElement.prototype.toDataURL = function(type) {
+  // GPU-rendered canvas: read back pixels from the GPU renderer.
+  if (this._gpuCtx && this._gpuHandle) {
+    try {
+      const result = Deno.core.ops.op_render_gpu_render(this._gpuHandle);
+      if (result && result.ok && result.pixels) {
+        const raw = atob(result.pixels);
+        const pixels = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) pixels[i] = raw.charCodeAt(i);
+        return _encodePNG(result.width, result.height, pixels);
+      }
+    } catch (_e) { /* fall through to software path */ }
+  }
   const ctx = this._ctx || this.getContext('2d');
   if (ctx && ctx._buf) {
     if (ctx._w === 0 || ctx._h === 0) return 'data:,';
@@ -14007,7 +14363,34 @@ navigator.keyboard = {
   lock() { return Promise.resolve(); },
   unlock() {},
 };
-navigator.gpu = { requestAdapter() { return Promise.resolve(null); } };
+navigator.gpu = {
+  requestAdapter() {
+    // Return a minimal adapter when render-gpu feature is available
+    if (typeof Deno.core.ops.op_render_gpu_create === 'function') {
+      return Promise.resolve({
+        requestDevice: () => Promise.resolve({
+          queue: {
+            writeBuffer: () => {},
+            submit: () => {},
+          },
+          createBuffer: () => ({}),
+          createTexture: () => ({}),
+          createCommandEncoder: () => ({
+            beginRenderPass: () => ({
+              endPass: () => {},
+              setViewport: () => {},
+              draw: () => {},
+            }),
+            finish: () => ({}),
+          }),
+          createShaderModule: () => ({}),
+          createRenderPipeline: () => ({}),
+        }),
+      });
+    }
+    return Promise.resolve(null);
+  }
+};
 navigator.wakeLock = { request() { return Promise.reject(new DOMException('Not allowed', 'NotAllowedError')); } };
 
 // Fullscreen API - defined via try/catch to survive V8 snapshot (document is null during snapshot)
@@ -14324,8 +14707,14 @@ globalThis.Worker = class Worker {
 };
 
 globalThis.__blobStore = globalThis.__blobStore || {};
+globalThis.__msStore = globalThis.__msStore || {};
 URL.createObjectURL = function(blob) {
   if (blob) {
+    if (blob instanceof MediaSource || (blob && blob._msId && blob._readyState !== undefined)) {
+      const id = 'blob:obscura/media-source/' + Math.random().toString(36).substring(2);
+      globalThis.__msStore[id] = blob;
+      return id;
+    }
     const id = 'blob:obscura/' + Math.random().toString(36).substring(2);
     // Store synchronously so a Worker built from the blob URL in the same
     // tick sees its source. Blob-URL Worker construction is synchronous in
@@ -14349,6 +14738,7 @@ URL.createObjectURL = function(blob) {
 };
 URL.revokeObjectURL = function(url) {
   delete globalThis.__blobStore[url];
+  delete globalThis.__msStore[url];
 };
 
 // Window-level scrolling (issue #468). #431 gave elements functional
