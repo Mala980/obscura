@@ -21,6 +21,7 @@ websocket = ["obscura-js/websocket"]
 canvas2d = ["obscura-js/canvas2d"]
 media = ["obscura-js/media"]
 webgl-gpu = ["obscura-js/webgl-gpu"]
+render-gpu = ["obscura-js/render-gpu"]
 
 [dependencies]
 obscura-browser = { workspace = true }

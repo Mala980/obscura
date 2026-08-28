@@ -24,7 +24,7 @@ media = ["dep:obscura-media"]
 # GPU-accelerated WebGL via glow (OpenGL bindings) + EGL headless context.
 webgl-gpu = ["dep:glow", "dep:egl"]
 # GPU-accelerated rendering via WebRender (servo parity).
-render-gpu = ["dep:obscura-render-gpu"]
+render-gpu = ["dep:obscura-render-gpu", "obscura-render-gpu/gpu"]
 
 [build-dependencies]
 deno_core = "0.350"
