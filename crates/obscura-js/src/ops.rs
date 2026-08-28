@@ -5311,7 +5311,7 @@ fn op_websocket_connect(state: &OpState, #[string] url: String) -> serde_json::V
 
     match tungstenite::connect(&url) {
         Ok(result) => {
-            let ws_socket = result.1; // WebSocket is the second element
+            let ws_socket = result.0; // WebSocket is the FIRST element in tungstenite 0.26
             let handle = {
                 let shared = state.borrow::<SharedState>().clone();
                 let mut gs = shared.borrow_mut();
