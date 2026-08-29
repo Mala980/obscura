@@ -29,7 +29,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang cmake libclang-dev libssl-dev llvm-dev pkg-config \
-            libegl1 libegl-dev libgles2 libgles-dev
+            libegl1 libegl-dev libgles2 libgles-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
