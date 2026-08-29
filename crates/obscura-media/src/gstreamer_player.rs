@@ -155,13 +155,3 @@ impl GStreamerPlayer {
     pub async fn is_looping(&self) -> bool { *self.loop_playback.read().await }
     pub fn can_play_type(mime: &str) -> &'static str { crate::media_types::MediaType::can_play_type(mime) }
 }
-
-#[cfg(not(feature = "gstreamer"))]
-pub struct GStreamerPlayer;
-
-#[cfg(not(feature = "gstreamer"))]
-impl GStreamerPlayer {
-    pub fn new() -> Result<Self, MediaError> {
-        Err(MediaError::InitError("GStreamer not enabled".to_string()))
-    }
-}
