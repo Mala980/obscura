@@ -12,7 +12,7 @@ pub mod wreq_client;
 pub use client::{
     env_allows_private_network, is_forbidden_ip, CallbackRegistry, ObscuraHttpClient,
     ObscuraNetError, RequestCallback, RequestCredentials, RequestInfo, RequestMode,
-    ResourceRequest, ResourceType, Response, ResponseCallback, SsrfGuardResolver,
+    ResourcePriority, ResourceRequest, ResourceType, Response, ResponseCallback, SsrfGuardResolver,
 };
 pub use cookies::{canonical_domain, default_cookie_path, CookieInfo, CookieJar};
 pub use encoding::{
