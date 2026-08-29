@@ -69,7 +69,7 @@ impl GStreamerPlayer {
             .build()
             .map_err(|e| MediaError::InitError(format!("video-sink: {e}")))?;
 
-        let pipeline = gst::Pipeline::new(Some("media-pipeline"));
+        let pipeline = gst::Pipeline::new();
         pipeline.add_many([&uridecodebin, &audio_sink, &video_sink])
             .map_err(|e| MediaError::InitError(format!("add elements: {e}")))?;
 
