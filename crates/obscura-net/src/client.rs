@@ -612,11 +612,17 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
 /// guard away for a better TLS fingerprint.
 pub struct SsrfGuardResolver {
     pub(crate) allow_private: bool,
+    cache: Arc<RwLock<HashMap<String, (Vec<SocketAddr>, Instant)>>>,
 }
+
+pub(crate) const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
 impl SsrfGuardResolver {
     pub fn new(allow_private: bool) -> Self {
-        Self { allow_private }
+        Self {
+            allow_private,
+            cache: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 }
 
@@ -624,7 +630,19 @@ impl Resolve for SsrfGuardResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let allow = self.allow_private || env_allows_private_network();
         let host = name.as_str().to_string();
+        let cache = self.cache.clone();
         Box::pin(async move {
+            // Check cache first
+            {
+                let guard = cache.read().await;
+                if let Some((addrs, inserted)) = guard.get(&host) {
+                    if inserted.elapsed() < DNS_CACHE_TTL {
+                        let iter: Addrs = Box::new(addrs.iter().copied());
+                        return Ok(iter);
+                    }
+                }
+            }
+
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
@@ -639,6 +657,13 @@ impl Resolve for SsrfGuardResolver {
                     .into());
                 }
             }
+
+            // Store in cache
+            {
+                let mut guard = cache.write().await;
+                guard.insert(host, (addrs.clone(), Instant::now()));
+            }
+
             let iter: Addrs = Box::new(addrs.into_iter());
             Ok(iter)
         })

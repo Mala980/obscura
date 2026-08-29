@@ -671,6 +671,104 @@ fn render_resource_type(url: &url::Url) -> ResourceType {
     }
 }
 
+/// Scan raw HTML text for `<link rel="stylesheet">`, `<script src>`, and
+/// `<link rel="preconnect">` tags. Returns (stylesheet_hrefs, script_srcs,
+/// preconnect_hrefs) with raw (unresolved) attribute values.
+///
+/// This is a fast byte-level scan intended to run before the full DOM parse
+/// completes so that resource fetches can begin in parallel with parsing.
+fn scan_html_for_early_resources(html: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut stylesheets = Vec::new();
+    let mut scripts = Vec::new();
+    let mut preconnects = Vec::new();
+
+    let lower = html.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip to next '<'
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        // Read tag name
+        let name_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
+            i += 1;
+        }
+        let tag_name = &html[name_start..i];
+        if tag_name != "link" && tag_name != "script" {
+            continue;
+        }
+        // Find end of opening tag
+        let mut href: Option<String> = None;
+        let mut rel_is_stylesheet = false;
+        let mut rel_is_preconnect = false;
+        let mut has_src = false;
+        let mut tag_end = i;
+        while i < bytes.len() && bytes[i] != b'>' {
+            if bytes[i] == b'"' || bytes[i] == b'\'' {
+                let quote = bytes[i];
+                i += 1;
+                let val_start = i;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += 1;
+                }
+                let val = &html[val_start..i];
+                i += 1; // skip closing quote
+                // Check what attribute this value belongs to by scanning backwards
+                let before = &html[name_start..val_start];
+                if let Some(attr_pos) = before.rfind('=') {
+                    let attr_region = &html[name_start..attr_pos];
+                    if let Some(attr_name) = attr_region.rsplit(|c: char| c.is_ascii_whitespace() || c == '/' || c == '<').next() {
+                        let attr_lower = attr_name.to_ascii_lowercase();
+                        if attr_lower == "href" {
+                            href = Some(val.to_string());
+                        } else if attr_lower == "rel" {
+                            let val_lower = val.to_ascii_lowercase();
+                            if val_lower.contains("stylesheet") {
+                                rel_is_stylesheet = true;
+                            }
+                            if val_lower.contains("preconnect") {
+                                rel_is_preconnect = true;
+                            }
+                        } else if attr_lower == "src" {
+                            has_src = true;
+                        }
+                    }
+                }
+            } else {
+                i += 1;
+            }
+            tag_end = i;
+        }
+        if i < bytes.len() && bytes[i] == b'>' {
+            tag_end = i + 1;
+        }
+        i = tag_end;
+
+        if tag_name == "link" {
+            if rel_is_stylesheet {
+                if let Some(h) = href {
+                    stylesheets.push(h);
+                }
+            } else if rel_is_preconnect {
+                if let Some(h) = href {
+                    preconnects.push(h);
+                }
+            }
+        } else if tag_name == "script" && has_src {
+            if let Some(h) = href {
+                scripts.push(h);
+            }
+        }
+    }
+
+    (stylesheets, scripts, preconnects)
+}
+
 /// Pull leading `@import` rules out of a stylesheet. Returns each import target
 /// URL with its optional media condition plus the CSS with those `@import`
 /// statements removed. Browsers fetch media-gated imports even when they do
@@ -2926,6 +3024,119 @@ impl Page {
             obscura_net::decode_response_with_name(&response.body, response.content_type());
         self.encoding = encoding_name.to_string();
         let dom = parse_html(&body_text);
+
+        // Early resource discovery: scan raw HTML for CSS, scripts, and
+        // preconnect hints BEFORE fetch_stylesheets/execute_scripts run.
+        // These background fetches populate the HTTP cache so the later
+        // serial discovery phases hit warm cache instead of the network.
+        {
+            let (early_css, early_scripts, early_preconnects) =
+                scan_html_for_early_resources(&body_text);
+            let document_url = url.clone();
+            let document_base = url.clone();
+            let client = self.http_client.clone();
+            #[cfg(feature = "stealth")]
+            let stealth_client = self.stealth_client.clone();
+            let callbacks = self.callbacks.clone();
+            let initiator = url.clone();
+
+            // Preconnect: warm DNS + TLS for critical origins (best-effort).
+            for href in &early_preconnects {
+                if let Ok(resolved) = document_base.join(href) {
+                    if resolved.scheme() == "http" || resolved.scheme() == "https" {
+                        let host = resolved.host_str().unwrap_or("").to_string();
+                        if !host.is_empty() {
+                            let client = client.clone();
+                            #[cfg(feature = "stealth")]
+                            let stealth_client = stealth_client.clone();
+                            tokio::spawn(async move {
+                                let _ = tokio::net::lookup_host((&*host, 0)).await;
+                                let _ = client;
+                                #[cfg(feature = "stealth")]
+                                let _ = stealth_client;
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Early stylesheet fetches
+            let early_css_count = early_css.len();
+            for href in &early_css {
+                if let Ok(resolved) = document_base.join(href) {
+                    if !subresource_allowed(Some(&document_url), resolved.as_str()) {
+                        continue;
+                    }
+                    let client = client.clone();
+                    #[cfg(feature = "stealth")]
+                    let stealth_client = stealth_client.clone();
+                    let callbacks = callbacks.clone();
+                    let initiator = initiator.clone();
+                    let url = resolved;
+                    tokio::spawn(async move {
+                        let request =
+                            ResourceRequest::subresource(ResourceType::Stylesheet, &initiator);
+                        #[cfg(feature = "stealth")]
+                        if let Some(stealth) = stealth_client {
+                            let _ = stealth
+                                .fetch_resource_with_callbacks(&url, request, Some(&callbacks))
+                                .await;
+                        } else {
+                            let _ = client
+                                .fetch_resource_with_callbacks(&url, request, Some(&callbacks))
+                                .await;
+                        }
+                        #[cfg(not(feature = "stealth"))]
+                        let _ = client
+                            .fetch_resource_with_callbacks(&url, request, Some(&callbacks))
+                            .await;
+                    });
+                }
+            }
+
+            // Early script fetches
+            let early_script_count = early_scripts.len();
+            for href in &early_scripts {
+                if let Ok(resolved) = document_base.join(href) {
+                    if !subresource_allowed(Some(&document_url), resolved.as_str()) {
+                        continue;
+                    }
+                    let client = client.clone();
+                    #[cfg(feature = "stealth")]
+                    let stealth_client = stealth_client.clone();
+                    let callbacks = callbacks.clone();
+                    let initiator = initiator.clone();
+                    let url = resolved;
+                    tokio::spawn(async move {
+                        let request =
+                            ResourceRequest::subresource(ResourceType::Script, &initiator);
+                        #[cfg(feature = "stealth")]
+                        if let Some(stealth) = stealth_client {
+                            let _ = stealth
+                                .fetch_resource_with_callbacks(&url, request, Some(&callbacks))
+                                .await;
+                        } else {
+                            let _ = client
+                                .fetch_resource_with_callbacks(&url, request, Some(&callbacks))
+                                .await;
+                        }
+                        #[cfg(not(feature = "stealth"))]
+                        let _ = client
+                            .fetch_resource_with_callbacks(&url, request, Some(&callbacks))
+                            .await;
+                    });
+                }
+            }
+
+            if early_css_count > 0 || early_script_count > 0 {
+                tracing::debug!(
+                    "early resource discovery: {} stylesheets, {} scripts, {} preconnects",
+                    early_css_count,
+                    early_script_count,
+                    early_preconnects.len(),
+                );
+            }
+        }
 
         self.title = dom
             .query_selector("title")

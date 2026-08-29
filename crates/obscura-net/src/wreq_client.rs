@@ -36,7 +36,19 @@ impl wreq::dns::Resolve for SsrfGuardResolver {
     fn resolve(&self, name: wreq::dns::Name) -> wreq::dns::Resolving {
         let allow = self.allow_private || env_allows_private_network();
         let host = name.as_str().to_string();
+        let cache = self.cache.clone();
         Box::pin(async move {
+            // Check cache first
+            {
+                let guard = cache.read().await;
+                if let Some((addrs, inserted)) = guard.get(&host) {
+                    if inserted.elapsed() < super::client::DNS_CACHE_TTL {
+                        let iter: wreq::dns::Addrs = Box::new(addrs.iter().copied());
+                        return Ok(iter);
+                    }
+                }
+            }
+
             let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
                 .await
                 .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::new(e) })?
@@ -51,6 +63,13 @@ impl wreq::dns::Resolve for SsrfGuardResolver {
                     .into());
                 }
             }
+
+            // Store in cache
+            {
+                let mut guard = cache.write().await;
+                guard.insert(host, (addrs.clone(), std::time::Instant::now()));
+            }
+
             let iter: wreq::dns::Addrs = Box::new(addrs.into_iter());
             Ok(iter)
         })
