@@ -612,7 +612,7 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
 /// guard away for a better TLS fingerprint.
 pub struct SsrfGuardResolver {
     pub(crate) allow_private: bool,
-    cache: Arc<RwLock<HashMap<String, (Vec<SocketAddr>, Instant)>>>,
+    pub(crate) cache: Arc<RwLock<HashMap<String, (Vec<SocketAddr>, Instant)>>>,
 }
 
 pub(crate) const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -637,7 +637,9 @@ impl Resolve for SsrfGuardResolver {
                 let guard = cache.read().await;
                 if let Some((addrs, inserted)) = guard.get(&host) {
                     if inserted.elapsed() < DNS_CACHE_TTL {
-                        let iter: Addrs = Box::new(addrs.iter().copied());
+                        let addrs = addrs.clone();
+                        drop(guard);
+                        let iter: Addrs = Box::new(addrs.into_iter());
                         return Ok(iter);
                     }
                 }
@@ -1098,7 +1100,7 @@ impl ObscuraHttpClient {
                 // SSRF guard: reject hostnames that resolve to a private/loopback IP.
                 .dns_resolver(Arc::new(SsrfGuardResolver::new(self.allow_private_network)))
                 // HTTP/2 with prior knowledge for faster multiplexed connections.
-                .http2_prior_knowledge(true)
+                .http2_prior_knowledge()
                 // Enable transparent decompression so servers can send compressed responses.
                 .gzip(true)
                 .brotli(true)

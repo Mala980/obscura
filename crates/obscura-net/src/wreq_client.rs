@@ -43,7 +43,9 @@ impl wreq::dns::Resolve for SsrfGuardResolver {
                 let guard = cache.read().await;
                 if let Some((addrs, inserted)) = guard.get(&host) {
                     if inserted.elapsed() < super::client::DNS_CACHE_TTL {
-                        let iter: wreq::dns::Addrs = Box::new(addrs.iter().copied());
+                        let addrs = addrs.clone();
+                        drop(guard);
+                        let iter: wreq::dns::Addrs = Box::new(addrs.into_iter());
                         return Ok(iter);
                     }
                 }
@@ -217,8 +219,6 @@ impl StealthHttpClient {
             // resolver still honours OBSCURA_ALLOW_PRIVATE_NETWORK on its own.
             .dns_resolver(Arc::new(SsrfGuardResolver::new(false)))
             .redirect(wreq::redirect::Policy::none())
-            // HTTP/2 with prior knowledge for faster multiplexed connections.
-            .http2_prior_knowledge(true)
             // Enable transparent decompression so servers can send compressed responses.
             .gzip(true)
             .brotli(true)
