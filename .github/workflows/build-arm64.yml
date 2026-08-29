@@ -43,7 +43,7 @@ jobs:
           key: arm64-linux
 
       - name: Build full release (ARM64)
-        run: cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --features render,stealth,websocket,canvas2d,gstreamer,webgl-gpu,render-gpu,media
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p obscura-cli --bins --features render,stealth,websocket,canvas2d,webgl-gpu,render-gpu,media
 
       - name: Smoke test - basic fetch
         shell: bash
