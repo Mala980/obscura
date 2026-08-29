@@ -226,10 +226,11 @@ impl EglHeadlessContext {
     /// Load the OpenGL function pointers via glow using EGL's proc address.
     pub fn load_gl(&self) -> glow::Context {
         unsafe {
-            glow::Context::from_loader_cstr(|name| {
+            glow::Context::from_loader_function(|name| {
                 let get_proc: EglGetProcAddress =
                     std::mem::transmute(egl_proc("eglGetProcAddress"));
-                get_proc(name.as_ptr()) as *const _
+                let cname = CString::new(name).unwrap();
+                get_proc(cname.as_ptr()) as *const _
             })
         }
     }
