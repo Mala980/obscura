@@ -4,8 +4,8 @@
 //! Uses the obscura-render-gpu crate's EGL headless context (glutin-based)
 //! so the browser and the renderer share the same GL context infrastructure.
 
-use std::ffi::CString;
 use std::sync::Arc;
+use glow::HasContext;
 
 pub struct GlContext {
     egl: Arc<obscura_render_gpu::EglHeadlessContext>,
@@ -52,11 +52,4 @@ impl GlContext {
         }
         pixels
     }
-}
-
-// Helper used by the glow loader signature; retained for API stability.
-#[allow(dead_code)]
-fn loader(name: &str, display: &glutin::display::Display) -> *const std::ffi::c_void {
-    let name = CString::new(name).unwrap();
-    display.get_proc_address(&name) as *const std::ffi::c_void
 }
