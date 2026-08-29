@@ -6162,34 +6162,21 @@ fn op_render_gpu_create(_state: &OpState, _width: u32, _height: u32) -> serde_js
 #[op2(fast)]
 fn op_render_gpu_initialize(state: &OpState, handle: u32) -> bool {
     let shared = state.borrow::<SharedState>().clone();
-    let gs = shared.borrow();
-    if let Some(renderer) = gs.gpu_renderer_store.renderers.get(&handle) {
-        // Synchronous wrapper around the async initialize; for a real WebRender
-        // backend this would block on the GPU device setup.
-        let rt = tokio::runtime::Handle::current();
-        let renderer_clone = {
-            // We cannot .await here in a sync op, but initialize is infallible
-            // in the stub. A real impl would use a channel or spawn.
-            drop(gs);
-            let mut gs = shared.borrow_mut();
-            gs.gpu_renderer_store.renderers.remove(&handle)
-        };
-        if let Some(renderer) = renderer_clone {
-            let rt = tokio::runtime::Handle::current();
-            let result = rt.block_on(renderer.initialize());
-            let mut gs = shared.borrow_mut();
-            match result {
-                Ok(()) => {
-                    gs.gpu_renderer_store.renderers.insert(handle, renderer);
-                    true
-                }
-                Err(_) => false,
-            }
-        } else {
-            false
+    // Take the renderer out of the store, initialize it, put it back.
+    let mut renderer = {
+        let mut gs = shared.borrow_mut();
+        gs.gpu_renderer_store.renderers.remove(&handle)
+    };
+    let Some(mut renderer) = renderer else { return false };
+    let rt = tokio::runtime::Handle::current();
+    let result = rt.block_on(renderer.initialize());
+    let mut gs = shared.borrow_mut();
+    match result {
+        Ok(()) => {
+            gs.gpu_renderer_store.renderers.insert(handle, renderer);
+            true
         }
-    } else {
-        false
+        Err(_) => false,
     }
 }
 
@@ -6204,14 +6191,16 @@ fn op_render_gpu_initialize(_state: &OpState, _handle: u32) -> bool {
 #[op2(fast)]
 fn op_render_gpu_resize(state: &OpState, handle: u32, width: u32, height: u32) -> bool {
     let shared = state.borrow::<SharedState>().clone();
+    let mut renderer = {
+        let mut gs = shared.borrow_mut();
+        gs.gpu_renderer_store.renderers.remove(&handle)
+    };
+    let Some(mut renderer) = renderer else { return false };
+    let rt = tokio::runtime::Handle::current();
+    let _ = rt.block_on(renderer.resize(width, height));
     let mut gs = shared.borrow_mut();
-    if let Some(renderer) = gs.gpu_renderer_store.renderers.get_mut(&handle) {
-        let rt = tokio::runtime::Handle::current();
-        let _ = rt.block_on(renderer.resize(width, height));
-        true
-    } else {
-        false
-    }
+    gs.gpu_renderer_store.renderers.insert(handle, renderer);
+    true
 }
 
 #[cfg(not(feature = "render-gpu"))]
@@ -6226,27 +6215,30 @@ fn op_render_gpu_resize(_state: &OpState, _handle: u32, _width: u32, _height: u3
 #[string]
 fn op_render_gpu_render(state: &OpState, handle: u32) -> String {
     let shared = state.borrow::<SharedState>().clone();
-    let gs = shared.borrow();
-    if let Some(renderer) = gs.gpu_renderer_store.renderers.get(&handle) {
-        let rt = tokio::runtime::Handle::current();
-        match rt.block_on(renderer.render()) {
-            Ok(pixels) => {
-                // Return pixel data as base64-encoded RGBA buffer
-                use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-                let b64 = BASE64.encode(&pixels);
-                let (w, h) = renderer.dimensions();
-                serde_json::json!({
-                    "ok": true,
-                    "width": w,
-                    "height": h,
-                    "pixels": b64,
-                })
-                .to_string()
-            }
-            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    let mut renderer = {
+        let mut gs = shared.borrow_mut();
+        gs.gpu_renderer_store.renderers.remove(&handle)
+    };
+    let Some(mut renderer) = renderer else {
+        return serde_json::json!({ "ok": false, "error": "invalid renderer handle" }).to_string();
+    };
+    let rt = tokio::runtime::Handle::current();
+    let (dimensions, result) = (renderer.dimensions(), rt.block_on(renderer.render()));
+    let mut gs = shared.borrow_mut();
+    gs.gpu_renderer_store.renderers.insert(handle, renderer);
+    match result {
+        Ok(pixels) => {
+            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+            let b64 = BASE64.encode(&pixels);
+            serde_json::json!({
+                "ok": true,
+                "width": dimensions.0,
+                "height": dimensions.1,
+                "pixels": b64,
+            })
+            .to_string()
         }
-    } else {
-        serde_json::json!({ "ok": false, "error": "invalid renderer handle" }).to_string()
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
     }
 }
 
@@ -6263,17 +6255,18 @@ fn op_render_gpu_render(_state: &OpState, _handle: u32) -> String {
 #[string]
 fn op_render_gpu_get_state(state: &OpState, handle: u32) -> String {
     let shared = state.borrow::<SharedState>().clone();
-    let gs = shared.borrow();
-    if let Some(renderer) = gs.gpu_renderer_store.renderers.get(&handle) {
-        let rt = tokio::runtime::Handle::current();
-        let state = rt.block_on(renderer.get_state());
-        serde_json::json!({
-            "state": format!("{:?}", state),
-        })
-        .to_string()
-    } else {
-        serde_json::json!({ "state": "Invalid" }).to_string()
-    }
+    let mut renderer = {
+        let mut gs = shared.borrow_mut();
+        gs.gpu_renderer_store.renderers.remove(&handle)
+    };
+    let Some(mut renderer) = renderer else {
+        return serde_json::json!({ "state": "Invalid" }).to_string();
+    };
+    let rt = tokio::runtime::Handle::current();
+    let state = rt.block_on(renderer.get_state());
+    let mut gs = shared.borrow_mut();
+    gs.gpu_renderer_store.renderers.insert(handle, renderer);
+    serde_json::json!({ "state": format!("{:?}", state) }).to_string()
 }
 
 #[cfg(not(feature = "render-gpu"))]
