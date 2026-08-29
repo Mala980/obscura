@@ -137,6 +137,12 @@ enum Command {
         #[arg(long)]
         wait: Option<u64>,
 
+        /// Override the settle quiet window in milliseconds. Controls how long
+        /// the event loop must be idle before settle returns. Lower values
+        /// return faster on pages with analytics/animation loops.
+        #[arg(long, default_value_t = 50)]
+        settle_timeout: u64,
+
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         timeout: u64,
 
@@ -419,6 +425,7 @@ async fn main() -> anyhow::Result<()> {
             dump,
             selector,
             wait,
+            settle_timeout,
             timeout,
             wait_until,
             user_agent,
@@ -482,6 +489,7 @@ async fn main() -> anyhow::Result<()> {
                     args.allow_private_network,
                     obey_robots,
                     screenshot,
+                    settle_timeout,
                 )
                 .await?;
             }
@@ -663,8 +671,10 @@ async fn run_multi_worker_serve(
     }
 }
 
-async fn settle_page(page: &mut Page, wait_secs: u64, fixed: bool) {
+async fn settle_page(page: &mut Page, wait_secs: u64, fixed: bool, settle_timeout_ms: u64) {
     let wait_ms = wait_secs.saturating_mul(1000);
+    // Set the settle quiet window via environment variable so page.settle can use it
+    std::env::set_var("OBSCURA_SETTLE_QUIET_WINDOW_MS", settle_timeout_ms.to_string());
     if fixed {
         page.settle_for_duration(wait_ms).await;
     } else {
@@ -694,6 +704,7 @@ async fn run_fetch(
     allow_private_network: bool,
     obey_robots: bool,
     screenshot: Option<std::path::PathBuf>,
+    settle_timeout_ms: u64,
 ) -> anyhow::Result<()> {
     // Whether the user explicitly passed --dump. With --eval also present this
     // decides whether we return the eval value or read the page after the
@@ -843,7 +854,7 @@ async fn run_fetch(
     // and completion callbacks (e.g. testharness's add_completion_callback) run
     // before we read the page. Returns early once the loop is idle, so static
     // pages stay fast.
-    settle_page(&mut page, wait_secs, wait_is_fixed).await;
+    settle_page(&mut page, wait_secs, wait_is_fixed, settle_timeout_ms).await;
 
     let mut deferred_eval_output = None;
     let initial_controlled_scroll = if eval_at_capture_boundary {
@@ -865,7 +876,7 @@ async fn run_fetch(
         None
     };
     if initial_controlled_scroll.is_some() {
-        settle_page(&mut page, wait_secs, wait_is_fixed).await;
+        settle_page(&mut page, wait_secs, wait_is_fixed, settle_timeout_ms).await;
     }
 
     if !eval_at_capture_boundary {
@@ -898,7 +909,7 @@ async fn run_fetch(
             // listener) that writes the DOM. Drive the event loop again so that
             // work completes, then fall through to selector/capture/dump instead
             // of returning the still-pending eval value (issue #248).
-            settle_page(&mut page, wait_secs, wait_is_fixed).await;
+            settle_page(&mut page, wait_secs, wait_is_fixed, settle_timeout_ms).await;
         }
     }
 

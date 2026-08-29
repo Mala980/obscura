@@ -165,6 +165,28 @@ impl RequestMode {
     }
 }
 
+/// Priority for resource fetching. Higher priority resources are fetched first
+/// when multiple resources are queued simultaneously.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ResourcePriority {
+    /// Synchronous `<script>`, `<link rel="stylesheet">` (blocking)
+    Highest = 0,
+    /// `<link rel="preload">`, fonts
+    High = 1,
+    /// Images above the fold
+    Medium = 2,
+    /// Images below the fold, `<script async>`
+    Low = 3,
+    /// Lazy-loaded resources (`loading="lazy"`)
+    Lazy = 4,
+}
+
+impl Default for ResourcePriority {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceRequest {
     pub resource_type: ResourceType,
@@ -181,6 +203,8 @@ pub struct ResourceRequest {
     /// Hard limit for the decoded response body retained by this request.
     /// Callers can lower it for especially constrained resource consumers.
     pub max_response_bytes: usize,
+    /// Priority for scheduling this request relative to others.
+    pub priority: ResourcePriority,
 }
 
 impl ResourceRequest {
@@ -192,6 +216,7 @@ impl ResourceRequest {
             mode: RequestMode::Navigate,
             credentials: RequestCredentials::Include,
             max_response_bytes: 64 * 1024 * 1024,
+            priority: ResourcePriority::Highest,
         }
     }
 
@@ -228,6 +253,7 @@ impl ResourceRequest {
                 | ResourceType::Xhr
                 | ResourceType::Fetch => 64 * 1024 * 1024,
             },
+            priority: ResourcePriority::default(),
         }
     }
 
@@ -243,11 +269,17 @@ impl ResourceRequest {
             mode: RequestMode::Cors,
             credentials: RequestCredentials::SameOrigin,
             max_response_bytes: 32 * 1024 * 1024,
+            priority: ResourcePriority::Highest,
         }
     }
 
     pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
         self.max_response_bytes = max_response_bytes;
+        self
+    }
+
+    pub fn with_priority(mut self, priority: ResourcePriority) -> Self {
+        self.priority = priority;
         self
     }
 

@@ -5,8 +5,8 @@ use obscura_dom::{parse_html, DomTree};
 use obscura_js::frame::FrameRealm;
 use obscura_js::runtime::ObscuraJsRuntime;
 use obscura_net::{
-    CallbackRegistry, ObscuraHttpClient, ObscuraNetError, RequestCallback, ResourceRequest,
-    ResourceType, Response, ResponseCallback,
+    CallbackRegistry, ObscuraHttpClient, ObscuraNetError, RequestCallback, ResourcePriority,
+    ResourceRequest, ResourceType, Response, ResponseCallback,
 };
 use url::Url;
 
@@ -1700,8 +1700,10 @@ impl Page {
                     let callbacks = callbacks.clone();
                     let initiator = initiator.clone();
                     async move {
+                        // Stylesheets are high priority (blocking)
                         let request =
-                            ResourceRequest::subresource(ResourceType::Stylesheet, &initiator);
+                            ResourceRequest::subresource(ResourceType::Stylesheet, &initiator)
+                                .with_priority(ResourcePriority::Highest);
                         #[cfg(feature = "stealth")]
                         let result = if let Some(stealth_client) = stealth_client {
                             stealth_client
@@ -2033,7 +2035,7 @@ impl Page {
         }
 
         tracing::info!("Found {} parser-discovered scripts", all_scripts.len());
-        let mut fetch_tasks: Vec<(usize, String)> = Vec::new();
+        let mut fetch_tasks: Vec<(usize, String, ResourcePriority)> = Vec::new();
 
         for (i, script) in all_scripts.iter().enumerate() {
             if !matches!(script.kind, ScriptKind::Classic) {
@@ -2068,7 +2070,13 @@ impl Page {
                     tracing::info!("Blocked script by interception: {}", full_url);
                     continue;
                 }
-                fetch_tasks.push((i, full_url));
+                // Determine priority: async scripts are low priority, sync scripts are highest
+                let priority = if script.is_async {
+                    ResourcePriority::Low
+                } else {
+                    ResourcePriority::Highest
+                };
+                fetch_tasks.push((i, full_url, priority));
             }
         }
 
@@ -2078,14 +2086,15 @@ impl Page {
             .url
             .clone()
             .unwrap_or_else(|| Url::parse("about:blank").unwrap());
-        let fetch_futures: Vec<_> = fetch_tasks
+        let mut fetch_futures: Vec<_> = fetch_tasks
             .iter()
-            .map(|(idx, url)| {
+            .map(|(idx, url, priority)| {
                 let client = client.clone();
                 let cbs = page_callbacks.clone();
                 let initiator = script_initiator.clone();
                 let url = url.clone();
                 let idx = *idx;
+                let priority = *priority;
                 async move {
                     let parsed =
                         Url::parse(&url).unwrap_or_else(|_| Url::parse("about:blank").unwrap());
@@ -2113,7 +2122,8 @@ impl Page {
                         };
                         return Some((idx, url, resp));
                     }
-                    let request = ResourceRequest::subresource(ResourceType::Script, &initiator);
+                    let request = ResourceRequest::subresource(ResourceType::Script, &initiator)
+                        .with_priority(priority);
                     match client
                         .fetch_resource_with_callbacks(&parsed, request, Some(&cbs))
                         .await
@@ -2127,6 +2137,14 @@ impl Page {
                 }
             })
             .collect();
+
+        // Sort by priority (highest first) so that buffer_unordered processes
+        // high-priority scripts before low-priority ones
+        fetch_futures.sort_by(|a, b| {
+            let a_priority = fetch_tasks.iter().find(|(idx, _, _)| *idx == a.0).map(|(_, _, p)| *p).unwrap_or(ResourcePriority::Medium);
+            let b_priority = fetch_tasks.iter().find(|(idx, _, _)| *idx == b.0).map(|(_, _, p)| *p).unwrap_or(ResourcePriority::Medium);
+            a_priority.cmp(&b_priority)
+        });
 
         // Bound concurrency: a page with 100 external scripts would
         // otherwise open 100 sockets at once, exhausting the connection
@@ -2730,7 +2748,14 @@ impl Page {
                     // observable document/network/script activity instead. The
                     // absolute caller budget and V8 watchdog still bound both
                     // asynchronous work and synchronous microtask storms.
-                    let _ = js.run_event_loop_until_quiescent(remaining, 150).await;
+                    //
+                    // Use configurable quiet window (default 50ms, reduced from 150ms)
+                    // for faster settle on pages with analytics/animation loops.
+                    let quiet_ms = std::env::var("OBSCURA_SETTLE_QUIET_WINDOW_MS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(50);
+                    let _ = js.run_event_loop_until_quiescent(remaining, quiet_ms).await;
                 }
             }
             if !self.advance_frames().await {
@@ -2743,10 +2768,12 @@ impl Page {
             // images or @font-face rules during settling. Seed those resources
             // here so a following capture remains a fast observation of the
             // retained page rather than initiating its own network phase.
+            //
+            // Use 300ms warmup (reduced from 1000ms) for faster page load.
             let warmup_ms = std::env::var("OBSCURA_RENDER_RESOURCE_SETTLE_WARMUP_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(1_000);
+                .unwrap_or(300);
             let remaining_ms = remaining_settle_resource_warmup_ms(
                 max_ms,
                 settle_started.elapsed(),

@@ -3926,7 +3926,9 @@ class Element extends Node {
     this._resetIframeFrame();
     this._iframeLoadingUrl = fullUrl;
     const el = this;
-    fetch(fullUrl, {mode: 'no-cors'}).then(async resp => {
+    // Defer lazy iframes until after the main content is loaded
+    const isLazy = this.getAttribute("loading") === "lazy";
+    const loadIframe = () => fetch(fullUrl, {mode: 'no-cors'}).then(async resp => {
       if (el._iframeLoadingUrl !== fullUrl) return;
       if (resp.ok || resp.type === 'opaque') {
         const html = await resp.text();
@@ -3964,6 +3966,12 @@ class Element extends Node {
 
       el.dispatchEvent(new Event('load'));
     });
+    // Defer lazy iframes until after the main content is loaded
+    if (isLazy) {
+      setTimeout(loadIframe, 100);
+    } else {
+      loadIframe();
+    }
   }
   get contentDocument() {
     if (this.localName !== 'iframe') return undefined;
@@ -5780,13 +5788,16 @@ class HTMLImageElement extends Element {
     if (this._imageQueued || this._imageComplete) return;
     this._imageQueued = true;
     const request = this._imageRequest;
+    // Defer lazy images until after the main content is loaded
+    const isLazy = this.getAttribute("loading") === "lazy";
+    const delay = isLazy ? 100 : 1;
     setTimeout(() => {
       if (request === this._imageRequest && !this._imageComplete) {
         this._runImageRequest(request);
       } else if (request === this._imageRequest) {
         this._imageQueued = false;
       }
-    }, 1);
+    }, delay);
   }
 
   _runImageRequest(request) {
