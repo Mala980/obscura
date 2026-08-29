@@ -21,6 +21,8 @@ websocket = ["dep:tungstenite", "dep:tokio-tungstenite"]
 canvas2d = ["dep:kurbo"]
 # Media playback (servo-media parity).
 media = ["dep:obscura-media"]
+# GStreamer media backend for real video/audio playback (servo-media parity).
+gstreamer = ["dep:obscura-media", "obscura-media/gstreamer"]
 # GPU-accelerated WebGL via glow (OpenGL bindings) + EGL headless context.
 webgl-gpu = ["dep:glow", "dep:obscura-render-gpu", "obscura-render-gpu/gpu"]
 # GPU-accelerated rendering via WebRender (servo parity).
