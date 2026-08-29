@@ -22,6 +22,7 @@ canvas2d = ["obscura-js/canvas2d"]
 media = ["obscura-js/media"]
 webgl-gpu = ["obscura-js/webgl-gpu"]
 render-gpu = ["obscura-js/render-gpu"]
+gstreamer = ["obscura-js/gstreamer"]
 
 [dependencies]
 obscura-browser = { workspace = true }
