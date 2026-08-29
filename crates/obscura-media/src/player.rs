@@ -35,6 +35,20 @@ pub struct MediaPlayer {
     muted: Arc<RwLock<bool>>,
 }
 
+impl Clone for MediaPlayer {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            source: self.source.clone(),
+            volume: self.volume.clone(),
+            current_time: self.current_time.clone(),
+            duration: self.duration.clone(),
+            loop_playback: self.loop_playback.clone(),
+            muted: self.muted.clone(),
+        }
+    }
+}
+
 impl MediaPlayer {
     pub fn new() -> Self {
         Self {
