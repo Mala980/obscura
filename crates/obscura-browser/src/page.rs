@@ -2080,6 +2080,9 @@ impl Page {
             }
         }
 
+        // Sort tasks by priority (highest first) before creating futures
+        fetch_tasks.sort_by(|a, b| a.2.cmp(&b.2));
+
         let client = self.http_client.clone();
         let page_callbacks = self.callbacks.clone();
         let script_initiator = self
@@ -2137,14 +2140,6 @@ impl Page {
                 }
             })
             .collect();
-
-        // Sort by priority (highest first) so that buffer_unordered processes
-        // high-priority scripts before low-priority ones
-        fetch_futures.sort_by(|a, b| {
-            let a_priority = fetch_tasks.iter().find(|(idx, _, _)| *idx == a.0).map(|(_, _, p)| *p).unwrap_or(ResourcePriority::Medium);
-            let b_priority = fetch_tasks.iter().find(|(idx, _, _)| *idx == b.0).map(|(_, _, p)| *p).unwrap_or(ResourcePriority::Medium);
-            a_priority.cmp(&b_priority)
-        });
 
         // Bound concurrency: a page with 100 external scripts would
         // otherwise open 100 sockets at once, exhausting the connection
