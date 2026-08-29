@@ -1072,6 +1072,15 @@ impl ObscuraHttpClient {
                 .danger_accept_invalid_certs(false)
                 // SSRF guard: reject hostnames that resolve to a private/loopback IP.
                 .dns_resolver(Arc::new(SsrfGuardResolver::new(self.allow_private_network)))
+                // HTTP/2 with prior knowledge for faster multiplexed connections.
+                .http2_prior_knowledge(true)
+                // Enable transparent decompression so servers can send compressed responses.
+                .gzip(true)
+                .brotli(true)
+                .deflate(true)
+                // Consistent connection pool settings.
+                .pool_idle_timeout(Duration::from_secs(300))
+                .tcp_keepalive(Duration::from_secs(60))
 ;
 
             if std::env::var_os("SSL_CERT_FILE").is_some()

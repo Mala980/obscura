@@ -197,7 +197,16 @@ impl StealthHttpClient {
             // `false` mirrors the `validate_url(url, false)` calls below; the
             // resolver still honours OBSCURA_ALLOW_PRIVATE_NETWORK on its own.
             .dns_resolver(Arc::new(SsrfGuardResolver::new(false)))
-            .redirect(wreq::redirect::Policy::none());
+            .redirect(wreq::redirect::Policy::none())
+            // HTTP/2 with prior knowledge for faster multiplexed connections.
+            .http2_prior_knowledge(true)
+            // Enable transparent decompression so servers can send compressed responses.
+            .gzip(true)
+            .brotli(true)
+            .deflate(true)
+            // Consistent connection pool settings.
+            .pool_idle_timeout(Duration::from_secs(300))
+            .tcp_keepalive(Duration::from_secs(60));
 
         // Honor SSL_CERT_FILE / SSL_CERT_DIR in the stealth client too.
         //
