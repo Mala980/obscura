@@ -9,8 +9,6 @@ pub mod v8_flags;
 mod write_stream;
 #[cfg(feature = "webgl-gpu")]
 pub mod webgl;
-#[cfg(feature = "gstreamer")]
-pub mod gstreamer;
 
 pub use markdown::HTML_TO_MARKDOWN_JS;
 pub use v8_flags::set_v8_flags;
