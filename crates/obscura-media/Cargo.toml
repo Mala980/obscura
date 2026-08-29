@@ -8,7 +8,7 @@ description = "Media playback for Obscura: audio/video via GStreamer (servo-medi
 
 [features]
 default = []
-gstreamer = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:gstreamer-audio"]
+gstreamer = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:gstreamer-audio", "dep:gstreamer-base", "dep:gstreamer-pbutils"]
 
 [dependencies]
 tokio = { workspace = true }
@@ -17,7 +17,9 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-gstreamer = { version = "0.23", optional = true }
-gstreamer-app = { version = "0.23", optional = true }
-gstreamer-video = { version = "0.23", optional = true }
-gstreamer-audio = { version = "0.23", optional = true }
+gstreamer = { version = "0.23", optional = true, features = ["v1_18", "v1_20", "v1_22", "app", "v1_22", "v1_24"] }
+gstreamer-app = { version = "0.23", optional = true, features = ["v1_18", "v1_20", "v1_22"] }
+gstreamer-video = { version = "0.23", optional = true, features = ["v1_18", "v1_20", "v1_22"] }
+gstreamer-audio = { version = "0.23", optional = true, features = ["v1_18", "v1_20", "v1_22"] }
+gstreamer-base = { version = "0.23", optional = true, features = ["v1_18", "v1_20", "v1_22"] }
+gstreamer-pbutils = { version = "0.23", optional = true, features = ["v1_18", "v1_20", "v1_22"] }
